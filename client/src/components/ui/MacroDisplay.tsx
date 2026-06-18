@@ -1,46 +1,26 @@
-import { useState, useEffect, type CSSProperties } from 'react';
+import { useState, useEffect } from 'react';
 import type { MacroTotals } from '../../types';
 
 interface MacroBarProps {
   macros: MacroTotals;
-  targets?: Partial<MacroTotals>;
 }
 
-// Colorblind-safe: a single hue (indigo) at three lightness steps, each with a
-// distinct fill pattern so segments are distinguishable by shape, not just color.
-const MACRO_SEGMENTS = [
-  { key: 'protein', label: 'P', className: 'bg-indigo-300', pattern: undefined },
-  { key: 'carbs',   label: 'C', className: 'bg-indigo-500', pattern: 'striped' as const },
-  { key: 'fat',     label: 'F', className: 'bg-indigo-800', pattern: 'dotted' as const },
+const BAR_SEGMENTS = [
+  { key: 'protein', color: '#38bdf8', cal: (m: MacroTotals) => m.protein_g * 4 },
+  { key: 'carbs',   color: '#fbbf24', cal: (m: MacroTotals) => m.carbs_g   * 4 },
+  { key: 'fat',     color: '#fb923c', cal: (m: MacroTotals) => m.fat_g     * 9 },
 ];
-
-function patternStyle(pattern?: 'striped' | 'dotted'): CSSProperties {
-  if (pattern === 'striped') return {
-    backgroundImage: 'repeating-linear-gradient(135deg, rgba(255,255,255,0.3) 0 3px, transparent 3px 6px)',
-  };
-  if (pattern === 'dotted') return {
-    backgroundImage: 'radial-gradient(circle, rgba(255,255,255,0.45) 1px, transparent 1.5px)',
-    backgroundSize: '5px 5px',
-  };
-  return {};
-}
 
 export function MacroBar({ macros }: MacroBarProps) {
   const totalCal = macros.protein_g * 4 + macros.carbs_g * 4 + macros.fat_g * 9;
 
-  const segments = [
-    { ...MACRO_SEGMENTS[0], cal: macros.protein_g * 4 },
-    { ...MACRO_SEGMENTS[1], cal: macros.carbs_g   * 4 },
-    { ...MACRO_SEGMENTS[2], cal: macros.fat_g     * 9 },
-  ];
-
   return (
     <div className="flex h-1.5 rounded-full overflow-hidden bg-gray-800 gap-px">
-      {segments.map(s => (
+      {BAR_SEGMENTS.map(s => (
         <div
           key={s.key}
-          className={`${s.className} transition-all`}
-          style={{ width: totalCal > 0 ? `${(s.cal / totalCal) * 100}%` : '0%', ...patternStyle(s.pattern) }}
+          className="transition-all"
+          style={{ width: totalCal > 0 ? `${(s.cal(macros) / totalCal) * 100}%` : '0%', backgroundColor: s.color }}
         />
       ))}
     </div>
@@ -126,10 +106,13 @@ interface CalorieRingProps {
   consumed: number;
   target: number;
   burned?: number;
+  protein?: number;
+  carbs?: number;
+  fat?: number;
   size?: number;
 }
 
-export function CalorieRing({ consumed, target, burned = 0, size = 132 }: CalorieRingProps) {
+export function CalorieRing({ consumed, target, burned = 0, protein = 0, carbs = 0, fat = 0, size = 132 }: CalorieRingProps) {
   const net = consumed - burned;
   const hasTarget = target > 0;
   const pct = hasTarget ? Math.min(net / target, 1) : 0;
@@ -144,10 +127,19 @@ export function CalorieRing({ consumed, target, burned = 0, size = 132 }: Calori
     const t = setTimeout(() => setDisplayPct(Math.min(pct, 1)), 80);
     return () => clearTimeout(t);
   }, [pct]);
-  const offset = circ * (1 - displayPct);
 
-  // Adherence-neutral: green = on target (celebrate), indigo = under (neutral), amber = over (nudge, not shame)
-  const strokeColor = over ? '#f59e0b' : under ? '#6366f1' : '#22c55e';
+  const filledArc = circ * displayPct;
+  const totalMacroCal = protein * 4 + carbs * 4 + fat * 9;
+  const hasMacros = totalMacroCal > 0;
+
+  // Split the filled arc into P/C/F segments proportional to calorie contribution
+  const pArc = hasMacros ? filledArc * (protein * 4 / totalMacroCal) : 0;
+  const cArc = hasMacros ? filledArc * (carbs   * 4 / totalMacroCal) : 0;
+  const fArc = hasMacros ? filledArc - pArc - cArc : 0;
+
+  // Fallback single color when no macro data
+  const singleColor = over ? '#f59e0b' : under ? '#6366f1' : '#22c55e';
+  const arcTransition = 'stroke-dasharray 0.6s cubic-bezier(0.34,1.56,0.64,1), stroke-dashoffset 0.6s cubic-bezier(0.34,1.56,0.64,1)';
 
   return (
     <div className="relative shrink-0" style={{ width: size, height: size }}>
@@ -155,13 +147,27 @@ export function CalorieRing({ consumed, target, burned = 0, size = 132 }: Calori
         {/* Track */}
         <circle cx={size/2} cy={size/2} r={r} fill="none" stroke="#1f2937" strokeWidth={9} />
         {hasTarget && (
-          <circle
-            cx={size/2} cy={size/2} r={r} fill="none"
-            stroke={strokeColor}
-            strokeWidth={9} strokeLinecap="round"
-            strokeDasharray={circ} strokeDashoffset={offset}
-            style={{ transition: 'stroke-dashoffset 0.6s cubic-bezier(0.34,1.56,0.64,1), stroke 0.4s ease' }}
-          />
+          hasMacros ? (
+            <>
+              {/* Protein — sky */}
+              <circle cx={size/2} cy={size/2} r={r} fill="none" stroke="#38bdf8" strokeWidth={9}
+                strokeDasharray={`${pArc} ${circ - pArc}`} strokeDashoffset={circ}
+                style={{ transition: arcTransition }} />
+              {/* Carbs — amber */}
+              <circle cx={size/2} cy={size/2} r={r} fill="none" stroke="#fbbf24" strokeWidth={9}
+                strokeDasharray={`${cArc} ${circ - cArc}`} strokeDashoffset={circ - pArc}
+                style={{ transition: arcTransition }} />
+              {/* Fat — orange */}
+              <circle cx={size/2} cy={size/2} r={r} fill="none" stroke="#fb923c" strokeWidth={9}
+                strokeDasharray={`${fArc} ${circ - fArc}`} strokeDashoffset={circ - pArc - cArc}
+                style={{ transition: arcTransition }} />
+            </>
+          ) : (
+            <circle cx={size/2} cy={size/2} r={r} fill="none"
+              stroke={singleColor} strokeWidth={9} strokeLinecap="round"
+              strokeDasharray={filledArc} strokeDashoffset={circ - filledArc}
+              style={{ transition: 'stroke-dashoffset 0.6s cubic-bezier(0.34,1.56,0.64,1), stroke 0.4s ease' }} />
+          )
         )}
       </svg>
       <div className="absolute inset-0 flex flex-col items-center justify-center gap-0.5">

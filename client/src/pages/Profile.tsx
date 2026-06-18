@@ -6,7 +6,7 @@ import { api } from '../api/client';
 import { useAppStore } from '../store/appStore';
 import type { User, WeightLog } from '../types';
 import { MACRO_CONFIG, DEFAULT_TRACKED_MACROS } from '../types';
-import { calculateTDEE, ACTIVITY_LABELS } from '../utils/tdee';
+import { calculateTDEE } from '../utils/tdee';
 import { displayWeight, convertWeight, parseSQLiteLocal, type WeightUnit } from '../utils/units';
 import Button from '../components/ui/Button';
 import Input from '../components/ui/Input';
@@ -170,9 +170,6 @@ function TargetsTab({ user, weightLog, onSave, saving }: { user: User; weightLog
   const initTrackedMacros = (): string[] =>
     user.tracked_macros?.length ? user.tracked_macros : [...DEFAULT_TRACKED_MACROS];
 
-  // Activity-level TDEE shown after computing — informational only (not stored)
-  const [activityTdeeDisplay, setActivityTdeeDisplay] = useState<number | null>(null);
-
   const [form, setForm] = useState({
     birth_date: user.birth_date ?? '',
     sex: user.sex ?? 'male',
@@ -245,8 +242,6 @@ function TargetsTab({ user, weightLog, onSave, saving }: { user: User; weightLog
       sex: form.sex as any,
     };
     const sedentaryTdee = calculateTDEE({ ...baseParams, activity_level: 'sedentary' });
-    const activityTdee = calculateTDEE({ ...baseParams, activity_level: form.activity_level as any });
-    setActivityTdeeDisplay(activityTdee);
 
     const offset = GOAL_OFFSET[form.weight_goal_type] ?? 0;
     const target = Math.max(1200, sedentaryTdee + offset);
@@ -258,7 +253,7 @@ function TargetsTab({ user, weightLog, onSave, saving }: { user: User; weightLog
       return { ...f, tdee_estimate: String(sedentaryTdee), calorie_target: String(target), ...macros };
     });
   // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [form.birth_date, form.sex, form.height_value, form.height_unit, form.activity_level, form.weight_goal_type, latestWeightKg]);
+  }, [form.birth_date, form.sex, form.height_value, form.height_unit, form.weight_goal_type, latestWeightKg]);
 
   // When goal changes, just update the field — useEffect above handles calorie_target recalc
   function handleGoalChange(e: React.ChangeEvent<HTMLSelectElement>) {
@@ -299,14 +294,12 @@ function TargetsTab({ user, weightLog, onSave, saving }: { user: User; weightLog
             { value: 'ft', label: 'ft (feet)' }, { value: 'cm', label: 'cm' }
           ]} />
         </div>
-        <Select label="Activity level" value={form.activity_level} onChange={sel('activity_level')}
-          options={Object.entries(ACTIVITY_LABELS).map(([v, l]) => ({ value: v, label: l }))} />
       </div>
 
       <div className="bg-gray-900 rounded-2xl border border-gray-800 p-4 space-y-3">
         <div className="flex items-center justify-between">
           <p className="text-xs font-semibold text-gray-400 uppercase tracking-wide">Calorie Target</p>
-          {activityTdeeDisplay && (
+          {form.tdee_estimate && (
             <span className="text-[10px] text-gray-600">auto-calculated</span>
           )}
         </div>
@@ -319,11 +312,6 @@ function TargetsTab({ user, weightLog, onSave, saving }: { user: User; weightLog
           <Input label="Sedentary TDEE (kcal)" type="number" value={form.tdee_estimate} onChange={num('tdee_estimate')} />
           <Input label="Base daily target (kcal)" type="number" value={form.calorie_target} onChange={num('calorie_target')} />
         </div>
-        {activityTdeeDisplay && (
-          <p className="text-xs text-indigo-400/80">
-            Active TDEE: ~{activityTdeeDisplay} kcal/day · on workout days your target increases by calories burned
-          </p>
-        )}
         {form.tdee_estimate && form.calorie_target && (
           <p className="text-xs text-gray-500">
             {Number(form.calorie_target) < Number(form.tdee_estimate)

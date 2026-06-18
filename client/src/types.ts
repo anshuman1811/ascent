@@ -243,7 +243,8 @@ export interface MacroInfo {
   /** Key on User for the target value; null = informational only, no target */
   targetKey: keyof User | null;
   unit: string;
-  pattern: 'solid' | 'striped' | 'dotted';
+  /** Hex color for progress bars and ring segments */
+  color: string;
   /** Default tracked on dashboard for new users */
   defaultTracked: boolean;
   /** Slider/input max for the Profile UI */
@@ -252,16 +253,16 @@ export interface MacroInfo {
 }
 
 export const MACRO_CONFIG: MacroInfo[] = [
-  { key: 'protein_g',       label: 'Protein',       unit: 'g',  targetKey: 'protein_target_g',       pattern: 'solid',   defaultTracked: true,  inputMax: 300,  inputStep: 5 },
-  { key: 'carbs_g',         label: 'Carbs',         unit: 'g',  targetKey: 'carbs_target_g',         pattern: 'striped', defaultTracked: true,  inputMax: 600,  inputStep: 10 },
-  { key: 'fat_g',           label: 'Fat',           unit: 'g',  targetKey: 'fat_target_g',           pattern: 'dotted',  defaultTracked: true,  inputMax: 200,  inputStep: 5 },
-  { key: 'fiber_g',         label: 'Fiber',         unit: 'g',  targetKey: 'fiber_target_g',         pattern: 'solid',   defaultTracked: true,  inputMax: 60,   inputStep: 1 },
-  { key: 'sugar_g',         label: 'Total Sugar',   unit: 'g',  targetKey: null,                     pattern: 'striped', defaultTracked: false, inputMax: 200,  inputStep: 5,  sublabel: 'incl. natural' },
-  { key: 'added_sugar_g',   label: 'Added Sugar',   unit: 'g',  targetKey: 'added_sugar_target_g',   pattern: 'striped', defaultTracked: false, inputMax: 100,  inputStep: 5,  sublabel: 'excl. natural' },
-  { key: 'saturated_fat_g', label: 'Saturated Fat', unit: 'g',  targetKey: 'saturated_fat_target_g', pattern: 'dotted',  defaultTracked: false, inputMax: 50,   inputStep: 1 },
-  { key: 'sodium_mg',       label: 'Sodium',        unit: 'mg', targetKey: 'sodium_target_mg',       pattern: 'solid',   defaultTracked: false, inputMax: 5000, inputStep: 100 },
-  { key: 'cholesterol_mg',  label: 'Cholesterol',   unit: 'mg', targetKey: 'cholesterol_target_mg',  pattern: 'striped', defaultTracked: false, inputMax: 500,  inputStep: 10 },
-  { key: 'potassium_mg',    label: 'Potassium',     unit: 'mg', targetKey: 'potassium_target_mg',    pattern: 'dotted',  defaultTracked: false, inputMax: 5000, inputStep: 100 },
+  { key: 'protein_g',       label: 'Protein',       unit: 'g',  targetKey: 'protein_target_g',       color: '#38bdf8', defaultTracked: true,  inputMax: 300,  inputStep: 5 },
+  { key: 'carbs_g',         label: 'Carbs',         unit: 'g',  targetKey: 'carbs_target_g',         color: '#fbbf24', defaultTracked: true,  inputMax: 600,  inputStep: 10 },
+  { key: 'fat_g',           label: 'Fat',           unit: 'g',  targetKey: 'fat_target_g',           color: '#fb923c', defaultTracked: true,  inputMax: 200,  inputStep: 5 },
+  { key: 'fiber_g',         label: 'Fiber',         unit: 'g',  targetKey: 'fiber_target_g',         color: '#34d399', defaultTracked: true,  inputMax: 60,   inputStep: 1 },
+  { key: 'sugar_g',         label: 'Total Sugar',   unit: 'g',  targetKey: null,                     color: '#facc15', defaultTracked: false, inputMax: 200,  inputStep: 5,  sublabel: 'incl. natural' },
+  { key: 'added_sugar_g',   label: 'Added Sugar',   unit: 'g',  targetKey: 'added_sugar_target_g',   color: '#f472b6', defaultTracked: false, inputMax: 100,  inputStep: 5,  sublabel: 'excl. natural' },
+  { key: 'saturated_fat_g', label: 'Saturated Fat', unit: 'g',  targetKey: 'saturated_fat_target_g', color: '#ea580c', defaultTracked: false, inputMax: 50,   inputStep: 1 },
+  { key: 'sodium_mg',       label: 'Sodium',        unit: 'mg', targetKey: 'sodium_target_mg',       color: '#a78bfa', defaultTracked: false, inputMax: 5000, inputStep: 100 },
+  { key: 'cholesterol_mg',  label: 'Cholesterol',   unit: 'mg', targetKey: 'cholesterol_target_mg',  color: '#f472b6', defaultTracked: false, inputMax: 500,  inputStep: 10 },
+  { key: 'potassium_mg',    label: 'Potassium',     unit: 'mg', targetKey: 'potassium_target_mg',    color: '#2dd4bf', defaultTracked: false, inputMax: 5000, inputStep: 100 },
 ];
 
 export const DEFAULT_TRACKED_MACROS: MacroKey[] = ['protein_g', 'carbs_g', 'fat_g', 'fiber_g'];

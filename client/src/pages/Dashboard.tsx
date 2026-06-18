@@ -314,7 +314,7 @@ export default function Dashboard({ userId: propUserId, hidePeer }: { userId?: n
             onClick={() => setLogWorkoutPickerOpen(true)}
             className="flex items-center gap-2 bg-gray-800 hover:bg-gray-700 text-white rounded-xl px-4 py-3 text-sm font-semibold transition-colors border border-gray-700"
           >
-            <Dumbbell size={16} /> Log Workout
+            <Dumbbell size={16} /> Log Activity
           </button>
         )}
       </div>
@@ -344,11 +344,14 @@ export default function Dashboard({ userId: propUserId, hidePeer }: { userId?: n
           : 'border-gray-800'
         }`}>
           <div className="flex items-center gap-4">
-            {/* Ring shows eaten vs effective target (base + burned) so it adapts on workout days */}
+            {/* Ring shows eaten vs effective target; arc split by P/C/F calorie contribution */}
             <CalorieRing
               consumed={summary.meals.calories}
               target={effectiveTarget}
               burned={0}
+              protein={summary.meals.protein_g}
+              carbs={summary.meals.carbs_g}
+              fat={summary.meals.fat_g}
             />
             <div className="flex-1 min-w-0 space-y-2">
               {/* Goal status */}
@@ -445,15 +448,10 @@ export default function Dashboard({ userId: propUserId, hidePeer }: { userId?: n
                     {target != null ? (
                       <div className="h-1.5 bg-gray-800 rounded-full overflow-hidden">
                         <div
-                          className="h-full bg-indigo-500 rounded-full transition-all"
+                          className="h-full rounded-full transition-all"
                           style={{
                             width: `${Math.min((val / (target || 1)) * 100, 100)}%`,
-                            backgroundImage: macro.pattern === 'striped'
-                              ? 'repeating-linear-gradient(135deg, rgba(255,255,255,0.35) 0 3px, transparent 3px 6px)'
-                              : macro.pattern === 'dotted'
-                              ? 'radial-gradient(circle, rgba(255,255,255,0.4) 1px, transparent 1.5px)'
-                              : undefined,
-                            backgroundSize: macro.pattern === 'dotted' ? '5px 5px' : undefined,
+                            backgroundColor: macro.color,
                           }}
                         />
                       </div>
@@ -1477,7 +1475,7 @@ function LogWorkoutPickerModal({ open, onClose, onLogActivity, onStartTracked }:
   onLogActivity: () => void; onStartTracked: () => void;
 }) {
   return (
-    <Modal open={open} onClose={onClose} title="Log Workout" size="sm">
+    <Modal open={open} onClose={onClose} title="Log Activity" size="sm">
       <div className="space-y-3">
         <button
           onClick={onStartTracked}
