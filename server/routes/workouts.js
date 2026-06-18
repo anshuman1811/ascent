@@ -9,7 +9,7 @@ function getSession(sessionId) {
   if (!session) return null;
   const exercises = db.prepare(`
     SELECT se.*, e.name as exercise_name, e.exercise_type, e.primary_muscles,
-      e.secondary_muscles, e.met_value
+      e.secondary_muscles, e.met_value, e.description, e.gif_url
     FROM session_exercises se
     JOIN exercises e ON e.id = se.exercise_id
     WHERE se.session_id = ?
@@ -40,13 +40,18 @@ function checkAndUpdatePB(userId, exerciseId, sessionId, actualReps, actualDurat
 
     if (newKg > existingKg) {
       isPB = true;
-      db.prepare(`
-        INSERT INTO personal_bests (user_id, exercise_id, rep_count, weight_value, weight_unit, achieved_at, session_id)
-        VALUES (?, ?, ?, ?, ?, datetime('now'), ?)
-        ON CONFLICT(user_id, exercise_id, rep_count) DO UPDATE SET
-          weight_value = excluded.weight_value, weight_unit = excluded.weight_unit,
-          achieved_at = excluded.achieved_at, session_id = excluded.session_id
-      `).run(userId, exerciseId, actualReps, weightValue, weightUnit, sessionId);
+      if (existing) {
+        db.prepare(`
+          UPDATE personal_bests SET weight_value = ?, weight_unit = ?,
+            achieved_at = datetime('now'), session_id = ?
+          WHERE id = ?
+        `).run(weightValue, weightUnit, sessionId, existing.id);
+      } else {
+        db.prepare(`
+          INSERT INTO personal_bests (user_id, exercise_id, rep_count, weight_value, weight_unit, achieved_at, session_id)
+          VALUES (?, ?, ?, ?, ?, datetime('now'), ?)
+        `).run(userId, exerciseId, actualReps, weightValue, weightUnit, sessionId);
+      }
     }
   } else if (actualDurationSecs) {
     const existing = db.prepare(`
@@ -178,7 +183,10 @@ router.post('/:id/exercises', (req, res) => {
 
 // POST /api/workouts/session-exercises/:seId/sets — log a set
 router.post('/session-exercises/:seId/sets', (req, res) => {
-  const { actual_reps, actual_duration_seconds, actual_weight_value, actual_weight_unit = 'lb' } = req.body;
+  const {
+    actual_reps, actual_duration_seconds, actual_weight_value, actual_weight_unit = 'lb',
+    actual_rest_seconds, notes,
+  } = req.body;
 
   const se = db.prepare(`
     SELECT se.*, ws.user_id FROM session_exercises se
@@ -198,10 +206,11 @@ router.post('/session-exercises/:seId/sets', (req, res) => {
 
   const result = db.prepare(`
     INSERT INTO set_logs (session_exercise_id, set_number, actual_reps, actual_duration_seconds,
-      actual_weight_value, actual_weight_unit, is_pb)
-    VALUES (?, ?, ?, ?, ?, ?, ?)
+      actual_weight_value, actual_weight_unit, is_pb, actual_rest_seconds, notes)
+    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
   `).run(req.params.seId, setNumber, actual_reps ?? null, actual_duration_seconds ?? null,
-         actual_weight_value ?? null, actual_weight_unit, isPB ? 1 : 0);
+         actual_weight_value ?? null, actual_weight_unit, isPB ? 1 : 0,
+         actual_rest_seconds ?? null, notes ?? null);
 
   // Mark exercise in_progress
   db.prepare(`UPDATE session_exercises SET status = 'in_progress' WHERE id = ? AND status = 'pending'`)
@@ -237,7 +246,6 @@ router.put('/session-exercises/:seId/complete', (req, res) => {
 router.put('/:id/finish', (req, res) => {
   const { total_rest_seconds } = req.body;
 
-  // Calculate calories burned using MET values
   const session = db.prepare('SELECT * FROM workout_sessions WHERE id = ?').get(req.params.id);
   const profile = db.prepare('SELECT weight_value, weight_unit FROM weight_log WHERE user_id = ? ORDER BY logged_at DESC LIMIT 1')
     .get(session.user_id);
@@ -245,21 +253,45 @@ router.put('/:id/finish', (req, res) => {
   let caloriesBurned = null;
   if (profile) {
     const weightKg = toKg(profile.weight_value, profile.weight_unit);
+    const startMs = new Date(session.started_at.replace(' ', 'T') + 'Z').getTime();
+    const totalHours = Math.max(0, (Date.now() - startMs) / 3_600_000);
+
     const exercises = db.prepare(`
       SELECT se.*, e.met_value, e.exercise_type
       FROM session_exercises se JOIN exercises e ON e.id = se.exercise_id
       WHERE se.session_id = ?
     `).all(req.params.id);
 
-    caloriesBurned = exercises.reduce((total, ex) => {
+    // Per-exercise calorie estimation using actual logged sets
+    let exerciseCals = 0;
+    for (const ex of exercises) {
       const sets = db.prepare('SELECT * FROM set_logs WHERE session_exercise_id = ?').all(ex.id);
-      const durationHours = sets.reduce((sum, s) => {
-        if (ex.exercise_type === 'timed') return sum + (s.actual_duration_seconds || 0) / 3600;
-        // Estimate ~3 seconds per rep
-        return sum + ((s.actual_reps || 0) * 3) / 3600;
-      }, 0);
-      return total + (ex.met_value || 4) * weightKg * durationHours;
-    }, 0);
+      if (!sets.length) continue;
+      const met = ex.met_value || 4;
+
+      if (ex.exercise_type === 'timed') {
+        // Timed exercises: MET × duration × bodyweight
+        const totalSecs = sets.reduce((s, set) => s + (set.actual_duration_seconds || 0), 0);
+        exerciseCals += met * weightKg * (totalSecs / 3600);
+      } else {
+        // Strength: ~4 seconds time-under-tension per rep × MET, plus volume-based component
+        const totalReps = sets.reduce((s, set) => s + (set.actual_reps || 0), 0);
+        const avgWeightKg = sets.reduce((s, set) => s + toKg(set.actual_weight_value || 0, set.actual_weight_unit || 'lb'), 0) / sets.length;
+        const tensionSecs = totalReps * 4;
+        const tensionCals = met * weightKg * (tensionSecs / 3600);
+        // Epley-based volume component: ~0.065 kcal per kg of load per rep
+        const volumeCals = avgWeightKg * totalReps * 0.065;
+        exerciseCals += Math.max(tensionCals, volumeCals);
+      }
+    }
+
+    // Overhead: transitions, setup, coaching between sets = MET 2.5 × 30% of session time
+    const overheadCals = 2.5 * weightKg * totalHours * 0.3;
+    caloriesBurned = exerciseCals + overheadCals;
+
+    // Sanity clamp: never exceed MET 12 × weight × total hours
+    if (exercises.length === 0) caloriesBurned = 4 * weightKg * totalHours;
+    caloriesBurned = Math.min(caloriesBurned, 12 * weightKg * totalHours);
   }
 
   db.prepare(`
@@ -270,11 +302,51 @@ router.put('/:id/finish', (req, res) => {
     WHERE id = ?
   `).run(total_rest_seconds ?? null, caloriesBurned ? Math.round(caloriesBurned) : null, req.params.id);
 
-  // Mark all pending/in_progress exercises as completed
   db.prepare(`UPDATE session_exercises SET status = 'completed' WHERE session_id = ? AND status != 'skipped'`)
     .run(req.params.id);
 
   res.json(getSession(req.params.id));
+});
+
+// PATCH /api/workouts/:id — update calories_burned override
+router.patch('/:id', (req, res) => {
+  const { calories_burned } = req.body;
+  if (calories_burned === undefined) return res.status(400).json({ error: 'calories_burned required' });
+  db.prepare('UPDATE workout_sessions SET calories_burned = ? WHERE id = ?')
+    .run(calories_burned !== null ? Math.round(Number(calories_burned)) : null, req.params.id);
+  res.json({ ok: true });
+});
+
+// POST /api/workouts/log-manual — log a completed activity without live tracking
+router.post('/log-manual', (req, res) => {
+  const { user_id, name = 'Activity', duration_minutes, calories_burned, date } = req.body;
+  if (!user_id) return res.status(400).json({ error: 'user_id is required' });
+
+  // Use provided date (YYYY-MM-DD) or today in UTC; store as UTC datetime
+  const completedAt = date
+    ? `${date}T23:59:00Z`.replace('T', ' ').replace('Z', '') // store as "YYYY-MM-DD 23:59:00"
+    : null; // null → use datetime('now')
+
+  const result = db.prepare(`
+    INSERT INTO workout_sessions (user_id, name, status, completed_at, calories_burned)
+    VALUES (?, ?, 'completed', COALESCE(?, datetime('now')), ?)
+  `).run(user_id, name, completedAt, calories_burned ? Math.round(calories_burned) : null);
+
+  const sessionId = result.lastInsertRowid;
+
+  if (duration_minutes && duration_minutes > 0) {
+    db.prepare(`
+      UPDATE workout_sessions SET started_at = datetime(completed_at, ? || ' minutes') WHERE id = ?
+    `).run(`-${Math.round(duration_minutes)}`, sessionId);
+  }
+
+  res.status(201).json(getSession(sessionId));
+});
+
+// DELETE /api/workouts/:id — remove a session from history
+router.delete('/:id', (req, res) => {
+  db.prepare('DELETE FROM workout_sessions WHERE id = ?').run(req.params.id);
+  res.json({ ok: true });
 });
 
 // PUT /api/workouts/:id/abandon

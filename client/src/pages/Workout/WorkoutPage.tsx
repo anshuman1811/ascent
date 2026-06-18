@@ -1,15 +1,15 @@
 import { useState } from 'react';
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query';
 import { useOutletContext, useNavigate } from 'react-router-dom';
-import { Play, Clock, Dumbbell, Plus, Trophy, History } from 'lucide-react';
+import { Play, Clock, Dumbbell, Plus, Trophy, History, Flame, Activity, Trash2, ChevronDown, ChevronUp, BarChart2, Timer } from 'lucide-react';
 import { api } from '../../api/client';
 import { useAppStore } from '../../store/appStore';
 import { useWorkoutStore } from '../../store/appStore';
 import type { Routine, WorkoutSession } from '../../types';
-import { formatDuration } from '../../utils/units';
+import { formatDuration, parseSQLiteLocal } from '../../utils/units';
 import Button from '../../components/ui/Button';
 import Modal from '../../components/ui/Modal';
-import Select from '../../components/ui/Select';
+import Input from '../../components/ui/Input';
 
 interface OutletCtx { userId: number; }
 
@@ -39,8 +39,29 @@ export default function WorkoutPage({ userId: propUserId }: { userId?: number })
   const navigate = useNavigate();
   const qc = useQueryClient();
   const { setSession } = useWorkoutStore();
-  const [startOpen, setStartOpen] = useState(false);
   const [tab, setTab] = useState<Tab>('start');
+  const [logActivityOpen, setLogActivityOpen] = useState(false);
+  const [confirmDeleteSessionId, setConfirmDeleteSessionId] = useState<number | null>(null);
+  const [expandedSessionId, setExpandedSessionId] = useState<number | null>(null);
+
+  const deleteSession = useMutation({
+    mutationFn: (id: number) => api.delete(`/workouts/${id}`),
+    onSuccess: () => {
+      qc.invalidateQueries({ queryKey: ['workout-history', userId] });
+      qc.invalidateQueries({ queryKey: ['daily-summary', userId] });
+      setConfirmDeleteSessionId(null);
+    },
+  });
+
+  const logActivity = useMutation({
+    mutationFn: (data: { name: string; duration_minutes: number; calories_burned: number; date?: string }) =>
+      api.post('/workouts/log-manual', { user_id: userId, ...data }),
+    onSuccess: () => {
+      qc.invalidateQueries({ queryKey: ['workout-history', userId] });
+      qc.invalidateQueries({ queryKey: ['daily-summary', userId] });
+      setLogActivityOpen(false);
+    },
+  });
 
   const { data: routines = [] } = useQuery({
     queryKey: ['routines', userId],
@@ -66,6 +87,12 @@ export default function WorkoutPage({ userId: propUserId }: { userId?: number })
     enabled: !!userId,
   });
 
+  const { data: expandedSession } = useQuery({
+    queryKey: ['session-detail', expandedSessionId],
+    queryFn: () => api.get<WorkoutSession>(`/workouts/${expandedSessionId}`),
+    enabled: expandedSessionId !== null,
+  });
+
   const startSession = useMutation({
     mutationFn: (routineId?: number) => api.post<WorkoutSession>('/workouts/start', {
       user_id: userId,
@@ -78,7 +105,15 @@ export default function WorkoutPage({ userId: propUserId }: { userId?: number })
     },
   });
 
-  const completedSessions = history.filter(s => s.status !== 'in_progress');
+  const completedSessions = history.filter(s => {
+    if (s.status === 'in_progress') return false;
+    if (s.status === 'abandoned') {
+      if (!s.completed_at) return false;
+      const dur = Math.round((parseSQLiteLocal(s.completed_at).getTime() - parseSQLiteLocal(s.started_at).getTime()) / 1000);
+      return dur >= 60;
+    }
+    return true;
+  });
 
   return (
     <div className="space-y-4">
@@ -108,7 +143,7 @@ export default function WorkoutPage({ userId: propUserId }: { userId?: number })
               <p className="text-xs font-medium text-indigo-400 mb-1">Session in progress</p>
               <p className="text-sm font-semibold text-white">{active.name}</p>
               <p className="text-xs text-indigo-300 mt-0.5">
-                Started {new Date(active.started_at).toLocaleTimeString('en-US', { hour: 'numeric', minute: '2-digit' })}
+                Started {parseSQLiteLocal(active.started_at).toLocaleTimeString('en-US', { hour: 'numeric', minute: '2-digit' })}
               </p>
               <Button onClick={() => navigate(`/workout/live/${active.id}`)} className="mt-3 w-full bg-indigo-600">
                 <Play size={14} /> Resume Workout
@@ -116,41 +151,52 @@ export default function WorkoutPage({ userId: propUserId }: { userId?: number })
             </div>
           )}
 
-          {!active && (
+          {routines.length > 0 && !active && (
             <div className="space-y-2">
-              <Button onClick={() => setStartOpen(true)} className="w-full" size="lg">
-                <Play size={16} /> Start from Routine
-              </Button>
-              <Button onClick={() => startSession.mutate(undefined)} variant="secondary" className="w-full">
-                <Plus size={14} /> Quick Start (Ad-hoc)
-              </Button>
-            </div>
-          )}
-
-          {routines.length > 0 && (
-            <div className="space-y-2">
-              <h2 className="text-sm font-semibold text-gray-400">Your Routines</h2>
+              <h2 className="text-xs font-semibold text-gray-500 uppercase tracking-wide">Your Routines</h2>
               {routines.map(r => (
                 <div key={r.id} className="bg-gray-900 rounded-xl border border-gray-800 p-3.5 flex items-center justify-between">
                   <div>
                     <p className="text-sm font-medium text-white">{r.name}</p>
                     {r.notes && <p className="text-xs text-gray-500 mt-0.5">{r.notes}</p>}
+                    <p className="text-xs text-gray-600 mt-0.5">{r.exercises.length} exercise{r.exercises.length !== 1 ? 's' : ''}</p>
                   </div>
-                  <Button size="sm" onClick={() => startSession.mutate(r.id)} disabled={!!active}>
+                  <Button size="sm" onClick={() => startSession.mutate(r.id)}>
                     <Play size={12} /> Start
                   </Button>
                 </div>
               ))}
+              <Button onClick={() => startSession.mutate(undefined)} variant="secondary" className="w-full" size="sm">
+                <Plus size={14} /> Ad-hoc (no routine)
+              </Button>
             </div>
           )}
 
           {routines.length === 0 && !active && (
-            <p className="text-sm text-gray-500 text-center py-4">
-              No routines yet.{' '}
-              <button className="text-indigo-400 underline" onClick={() => navigate('/library/routines')}>
-                Build one in Library
-              </button>
-            </p>
+            <div className="space-y-3">
+              <Button onClick={() => startSession.mutate(undefined)} className="w-full" size="lg">
+                <Play size={16} /> Start Tracked Workout
+              </Button>
+              <p className="text-sm text-gray-500 text-center">
+                Or{' '}
+                <button className="text-indigo-400 underline" onClick={() => navigate('/library/routines')}>
+                  build a routine
+                </button>{' '}
+                first for structured workouts.
+              </p>
+            </div>
+          )}
+
+          {!active && (
+            <div className="border-t border-gray-800/50 pt-3">
+              <Button
+                onClick={() => setLogActivityOpen(true)}
+                className="w-full bg-gray-700 hover:bg-gray-600 border border-gray-600"
+                size="sm"
+              >
+                <Activity size={14} /> Log Activity (walk, run, hike…)
+              </Button>
+            </div>
           )}
         </div>
       )}
@@ -163,33 +209,123 @@ export default function WorkoutPage({ userId: propUserId }: { userId?: number })
           )}
           {completedSessions.map(session => {
             const duration = session.completed_at
-              ? Math.round((new Date(session.completed_at).getTime() - new Date(session.started_at).getTime()) / 1000)
+              ? Math.max(0, Math.round((parseSQLiteLocal(session.completed_at).getTime() - parseSQLiteLocal(session.started_at).getTime()) / 1000))
               : 0;
+            const isExpanded = expandedSessionId === session.id;
+            const detail = isExpanded ? expandedSession : null;
             return (
-              <div key={session.id} className="bg-gray-900 rounded-xl border border-gray-800 p-3.5">
-                <div className="flex items-start justify-between">
-                  <div>
-                    <p className="text-sm font-medium text-white">{session.name}</p>
-                    <p className="text-xs text-gray-500 mt-0.5">
-                      {new Date(session.started_at).toLocaleDateString('en-US', { weekday: 'short', month: 'short', day: 'numeric' })}
-                    </p>
-                  </div>
-                  <div className="text-right text-xs text-gray-500">
-                    <div className="flex items-center gap-1"><Clock size={11} />{formatDuration(duration)}</div>
-                    {session.calories_burned && (
-                      <div className="flex items-center gap-1 mt-0.5">
-                        <Dumbbell size={11} />{Math.round(session.calories_burned)} kcal
+              <div key={session.id} className="bg-gray-900 rounded-xl border border-gray-800 overflow-hidden">
+                <div className="p-3.5">
+                  <div className="flex items-start justify-between">
+                    <button
+                      onClick={() => setExpandedSessionId(isExpanded ? null : session.id)}
+                      className="flex-1 min-w-0 mr-2 text-left"
+                    >
+                      <p className="text-sm font-medium text-white">{session.name}</p>
+                      <p className="text-xs text-gray-500 mt-0.5">
+                        {parseSQLiteLocal(session.started_at).toLocaleDateString('en-US', { weekday: 'short', month: 'short', day: 'numeric' })}
+                      </p>
+                    </button>
+                    <div className="flex items-center gap-2 shrink-0">
+                      <div className="text-right text-xs text-gray-500">
+                        <div className="flex items-center gap-1"><Clock size={11} />{formatDuration(duration)}</div>
+                        {session.calories_burned && (
+                          <div className="flex items-center gap-1 mt-0.5 justify-end">
+                            <Flame size={11} />{Math.round(session.calories_burned)} kcal
+                          </div>
+                        )}
                       </div>
+                      {confirmDeleteSessionId === session.id ? (
+                        <div className="flex items-center gap-1">
+                          <button onClick={() => deleteSession.mutate(session.id)}
+                            className="text-[11px] px-1.5 py-0.5 rounded bg-red-900/50 text-red-400 hover:bg-red-900 transition-colors">
+                            Del
+                          </button>
+                          <button onClick={() => setConfirmDeleteSessionId(null)}
+                            className="text-[11px] px-1.5 py-0.5 rounded bg-gray-800 text-gray-400 hover:text-white transition-colors">
+                            No
+                          </button>
+                        </div>
+                      ) : (
+                        <button onClick={() => setConfirmDeleteSessionId(session.id)}
+                          className="p-1.5 rounded-lg hover:bg-gray-800 text-gray-700 hover:text-red-400 transition-colors">
+                          <Trash2 size={13} />
+                        </button>
+                      )}
+                      <button
+                        onClick={() => setExpandedSessionId(isExpanded ? null : session.id)}
+                        className="p-1.5 rounded-lg hover:bg-gray-800 text-gray-600 hover:text-gray-300 transition-colors"
+                      >
+                        {isExpanded ? <ChevronUp size={13} /> : <ChevronDown size={13} />}
+                      </button>
+                    </div>
+                  </div>
+                  {session.status === 'abandoned' && (
+                    <span className="mt-1.5 inline-block text-[10px] px-2 py-0.5 bg-gray-800 text-gray-500 rounded-full">abandoned</span>
+                  )}
+                </div>
+
+                {isExpanded && (
+                  <div className="border-t border-gray-800">
+                    {!detail ? (
+                      <p className="text-xs text-gray-600 text-center py-4">Loading…</p>
+                    ) : detail.exercises && detail.exercises.length > 0 ? (
+                      <div className="divide-y divide-gray-800/50">
+                        {detail.exercises.map(ex => (
+                          <div key={ex.id} className="px-4 py-3">
+                            <div className="flex items-center gap-2 mb-2">
+                              {ex.exercise_type === 'timed'
+                                ? <Timer size={11} className="text-purple-400 shrink-0" />
+                                : <BarChart2 size={11} className="text-blue-400 shrink-0" />}
+                              <p className="text-xs font-medium text-white">{ex.exercise_name}</p>
+                              <span className="text-[10px] text-gray-600 ml-auto">{ex.sets?.length ?? 0} sets</span>
+                            </div>
+                            {ex.sets && ex.sets.length > 0 ? (
+                              <div className="space-y-1">
+                                {ex.sets.map((set: any) => (
+                                  <div key={set.id} className="flex items-center gap-2 text-[11px] text-gray-400 flex-wrap">
+                                    <span className="text-gray-600 w-8 shrink-0">Set {set.set_number}</span>
+                                    {ex.exercise_type === 'timed' ? (
+                                      <span className="font-medium text-white">{set.actual_duration_seconds}s</span>
+                                    ) : (
+                                      <>
+                                        <span className="font-medium text-white">{set.actual_reps} reps</span>
+                                        {set.actual_weight_value && (
+                                          <span className="text-gray-400">@ {set.actual_weight_value} {set.actual_weight_unit}</span>
+                                        )}
+                                      </>
+                                    )}
+                                    {set.actual_rest_seconds != null && (
+                                      <span className="text-indigo-400/60 ml-auto">{set.actual_rest_seconds}s rest</span>
+                                    )}
+                                    {set.notes && <span className="text-gray-600 italic">{set.notes}</span>}
+                                  </div>
+                                ))}
+                              </div>
+                            ) : (
+                              <p className="text-[11px] text-gray-600">No sets logged.</p>
+                            )}
+                          </div>
+                        ))}
+                      </div>
+                    ) : (
+                      <p className="text-xs text-gray-600 text-center py-4">No exercises logged for this session.</p>
                     )}
                   </div>
-                </div>
-                {session.status === 'abandoned' && (
-                  <span className="mt-1.5 inline-block text-[10px] px-2 py-0.5 bg-red-900/30 text-red-400 rounded-full">abandoned</span>
                 )}
               </div>
             );
           })}
         </div>
+      )}
+
+      {logActivityOpen && (
+        <LogActivityModal
+          open
+          onClose={() => setLogActivityOpen(false)}
+          onSave={(data) => logActivity.mutate(data)}
+          loading={logActivity.isPending}
+        />
       )}
 
       {/* Personal Records tab */}
@@ -209,13 +345,13 @@ export default function WorkoutPage({ userId: propUserId }: { userId?: number })
                     <p className="text-sm font-medium text-white">{pb.exercise_name}</p>
                   </div>
                   <p className="text-xs text-gray-500 mt-1">
-                    {new Date(pb.achieved_at).toLocaleDateString('en-US', { month: 'short', day: 'numeric', year: 'numeric' })}
+                    {parseSQLiteLocal(pb.achieved_at).toLocaleDateString('en-US', { month: 'short', day: 'numeric', year: 'numeric' })}
                   </p>
                 </div>
                 <div className="text-right">
                   {pb.rep_count != null && pb.weight_value != null && (
                     <p className="text-sm font-semibold text-yellow-400">
-                      {pb.rep_count} × {pb.weight_value}{pb.weight_unit}
+                      {pb.rep_count} × {pb.weight_value} {pb.weight_unit}
                     </p>
                   )}
                   {pb.duration_seconds != null && (
@@ -233,38 +369,119 @@ export default function WorkoutPage({ userId: propUserId }: { userId?: number })
         </div>
       )}
 
-      <StartWorkoutModal
-        open={startOpen}
-        routines={routines}
-        onClose={() => setStartOpen(false)}
-        onStart={(routineId) => startSession.mutate(routineId)}
-        loading={startSession.isPending}
-      />
     </div>
   );
 }
 
-function StartWorkoutModal({ open, routines, onClose, onStart, loading }: {
-  open: boolean; routines: Routine[]; onClose: () => void;
-  onStart: (routineId?: number) => void; loading: boolean;
+// ─── Log Activity Modal ───────────────────────────────────────────────────────
+
+const ACTIVITY_PRESETS = [
+  'Walk', 'Run', 'Hike', 'Bike Ride', 'Swim',
+  'Strength Training', 'HIIT', 'Yoga', 'Stretching', 'Yard Work', 'Other',
+];
+
+function fmt(d: Date) {
+  return `${d.getFullYear()}-${String(d.getMonth()+1).padStart(2,'0')}-${String(d.getDate()).padStart(2,'0')}`;
+}
+
+function LogActivityModal({ open, onClose, onSave, loading }: {
+  open: boolean; onClose: () => void;
+  onSave: (data: { name: string; duration_minutes: number; calories_burned: number; date?: string }) => void;
+  loading: boolean;
 }) {
-  const [routineId, setRoutineId] = useState<number | ''>('');
+  const [name, setName] = useState('');
+  const [duration, setDuration] = useState('');
+  const [calories, setCalories] = useState('');
+  const todayStr = fmt(new Date());
+  const [activityDate, setActivityDate] = useState(todayStr);
+
+  const canSave = name.trim() && parseFloat(calories) > 0;
+  const handleSave = () => {
+    if (canSave && !loading) {
+      onSave({
+        name: name.trim(),
+        duration_minutes: parseFloat(duration) || 0,
+        calories_burned: parseFloat(calories),
+        date: activityDate !== todayStr ? activityDate : undefined,
+      });
+    }
+  };
 
   return (
-    <Modal open={open} onClose={onClose} title="Start Workout" size="sm">
+    <Modal open={open} onClose={onClose} title="Log Activity" size="sm">
       <div className="space-y-4">
-        <Select
-          label="Select routine (optional)"
-          value={routineId}
-          onChange={e => setRoutineId(e.target.value ? Number(e.target.value) : '')}
-          options={[
-            { value: '', label: '— Ad-hoc (no routine) —' },
-            ...routines.map(r => ({ value: r.id, label: r.name })),
-          ]}
-        />
-        <Button onClick={() => onStart(routineId || undefined)} disabled={loading} className="w-full">
-          {loading ? 'Starting…' : 'Start'}
-        </Button>
+        <div>
+          <p className="text-xs text-gray-500 mb-2">Activity type</p>
+          <div className="flex flex-wrap gap-1.5 mb-3">
+            {ACTIVITY_PRESETS.map(preset => (
+              <button
+                key={preset}
+                onClick={() => setName(preset)}
+                className={`px-3 py-1.5 rounded-full text-xs font-medium transition-colors ${
+                  name === preset ? 'bg-indigo-600 text-white' : 'bg-gray-800 text-gray-400 hover:text-white'
+                }`}
+              >
+                {preset}
+              </button>
+            ))}
+          </div>
+          <Input
+            label="Or type a custom name"
+            value={name}
+            onChange={e => setName(e.target.value)}
+            placeholder="e.g. Pickleball, CrossFit, Rowing…"
+          />
+        </div>
+
+        <div>
+          <label className="block text-xs text-gray-400 mb-1">Date</label>
+          <input
+            type="date"
+            value={activityDate}
+            max={todayStr}
+            onChange={e => setActivityDate(e.target.value)}
+            className="w-full bg-gray-800 border border-gray-700 rounded-xl px-3 py-2 text-sm text-white focus:border-indigo-500 outline-none"
+          />
+          {activityDate !== todayStr && (
+            <p className="text-[11px] text-indigo-400 mt-1">
+              Logging for {new Date(activityDate + 'T12:00:00').toLocaleDateString('en-US', { weekday: 'long', month: 'short', day: 'numeric' })}
+            </p>
+          )}
+        </div>
+
+        <div className="grid grid-cols-2 gap-3">
+          <Input
+            label="Duration (min)"
+            type="number"
+            value={duration}
+            onChange={e => setDuration(e.target.value)}
+            placeholder="e.g. 45"
+            onKeyDown={e => e.key === 'Enter' && handleSave()}
+          />
+          <Input
+            label="Calories burned *"
+            type="number"
+            value={calories}
+            onChange={e => setCalories(e.target.value)}
+            placeholder="e.g. 300"
+            onKeyDown={e => e.key === 'Enter' && handleSave()}
+          />
+        </div>
+
+        <p className="text-[11px] text-gray-600">
+          Tip: use a fitness app or wearable for accurate values, or rough averages (walk ~4 kcal/min, run ~10 kcal/min, strength ~5–8 kcal/min).
+        </p>
+
+        <div className="flex gap-2">
+          <Button variant="secondary" onClick={onClose} className="flex-1">Cancel</Button>
+          <Button
+            onClick={handleSave}
+            disabled={!canSave || loading}
+            className="flex-1"
+          >
+            <Flame size={14} /> {loading ? 'Saving…' : 'Log Activity'}
+          </Button>
+        </div>
       </div>
     </Modal>
   );

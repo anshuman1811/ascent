@@ -1,5 +1,6 @@
 import { useState } from 'react';
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query';
+import { useToast } from '../../components/ui/Toast';
 import { Search, Plus, Edit2, Trash2, Timer, BarChart2, ChevronDown } from 'lucide-react';
 import { api } from '../../api/client';
 import type { Exercise, ExerciseCategory } from '../../types';
@@ -8,6 +9,7 @@ import Input from '../../components/ui/Input';
 import Select from '../../components/ui/Select';
 import Modal from '../../components/ui/Modal';
 import MuscleMap, { MuscleMapLegend } from '../../components/ui/MuscleMap';
+import ExerciseAnimation from '../../components/ui/ExerciseAnimation';
 
 const MUSCLES = [
   'chest','upper_back','lats','lower_back','shoulders','rear_delts',
@@ -39,12 +41,14 @@ const CATEGORY_COLORS: Record<string, string> = {
 
 export default function ExerciseLibrary() {
   const qc = useQueryClient();
+  const { toast } = useToast();
   const [search, setSearch] = useState('');
   const [category, setCategory] = useState<ExerciseCategory | 'all'>('all');
   const [editEx, setEditEx] = useState<Exercise | null>(null);
   const [showAdd, setShowAdd] = useState(false);
   const [expandedMuscles, setExpandedMuscles] = useState<Set<number>>(new Set());
   const toggleMuscles = (id: number) => setExpandedMuscles(prev => { const s = new Set(prev); s.has(id) ? s.delete(id) : s.add(id); return s; });
+  const [confirmExId, setConfirmExId] = useState<number | null>(null);
 
   const { data: allExercises = [], isLoading } = useQuery({
     queryKey: ['exercises', search],
@@ -56,7 +60,7 @@ export default function ExerciseLibrary() {
   const deleteEx = useMutation({
     mutationFn: (id: number) => api.delete(`/exercises/${id}`),
     onSuccess: () => qc.invalidateQueries({ queryKey: ['exercises'] }),
-    onError: (err: Error) => alert(err.message),
+    onError: (err: Error) => toast(err.message, 'error'),
   });
 
   return (
@@ -64,7 +68,7 @@ export default function ExerciseLibrary() {
       <div className="flex items-center justify-between">
         <div>
           <h1 className="text-xl font-bold text-white">Exercise Library</h1>
-          <p className="text-xs text-gray-500 mt-0.5">{exercises.length} exercises</p>
+          <p className="text-xs text-gray-500 mt-0.5">{exercises.length} exercise{exercises.length !== 1 ? 's' : ''}</p>
         </div>
         <Button onClick={() => setShowAdd(true)} size="sm">
           <Plus size={14} /> Add Exercise
@@ -72,12 +76,12 @@ export default function ExerciseLibrary() {
       </div>
 
       {/* Category filter */}
-      <div className="flex gap-1.5 flex-wrap">
+      <div className="flex gap-1.5 overflow-x-auto hide-scrollbar pb-0.5">
         {CATEGORIES.map(c => (
           <button
             key={c.value}
             onClick={() => setCategory(c.value)}
-            className={`px-3 py-1 rounded-full text-xs font-medium transition-colors ${
+            className={`shrink-0 px-3 py-1 rounded-full text-xs font-medium transition-colors ${
               category === c.value
                 ? 'bg-indigo-600 text-white'
                 : 'bg-gray-800 text-gray-400 hover:text-white'
@@ -103,7 +107,8 @@ export default function ExerciseLibrary() {
       <div className="space-y-2">
         {exercises.map(ex => {
           const hasMuscles = ex.primary_muscles.length > 0 || ex.secondary_muscles.length > 0;
-          const musclesOpen = expandedMuscles.has(ex.id);
+          const expanded = expandedMuscles.has(ex.id);
+          const hasVisuals = !!ex.gif_url || hasMuscles;
           return (
             <div key={ex.id} className="bg-gray-900 rounded-xl border border-gray-800 p-3.5">
               <div className="flex items-start justify-between gap-2">
@@ -133,36 +138,67 @@ export default function ExerciseLibrary() {
                   </div>
                 </div>
                 <div className="flex items-center gap-1">
-                  {hasMuscles && (
+                  {hasVisuals && (
                     <button
                       onClick={() => toggleMuscles(ex.id)}
-                      title="Toggle muscle map"
-                      className={`p-2 rounded-lg transition-colors text-gray-500 hover:text-white ${musclesOpen ? 'bg-gray-800 text-white' : 'hover:bg-gray-800'}`}
+                      title="Toggle visuals"
+                      className={`p-2 rounded-lg transition-colors text-gray-500 hover:text-white ${expanded ? 'bg-gray-800 text-white' : 'hover:bg-gray-800'}`}
                     >
-                      <ChevronDown size={14} className={`transition-transform ${musclesOpen ? 'rotate-180' : ''}`} />
+                      <ChevronDown size={14} className={`transition-transform ${expanded ? 'rotate-180' : ''}`} />
                     </button>
                   )}
                   <button onClick={() => setEditEx(ex)} className="p-2 rounded-lg hover:bg-gray-800 text-gray-500 hover:text-white transition-colors">
                     <Edit2 size={14} />
                   </button>
-                  <button
-                    onClick={() => { if (confirm(`Delete "${ex.name}"?`)) deleteEx.mutate(ex.id); }}
-                    className="p-2 rounded-lg hover:bg-gray-800 text-gray-500 hover:text-red-400 transition-colors"
-                  >
-                    <Trash2 size={14} />
-                  </button>
+                  {confirmExId === ex.id ? (
+                    <>
+                      <span className="text-xs text-gray-400 ml-1">Delete?</span>
+                      <button
+                        onClick={() => { deleteEx.mutate(ex.id); setConfirmExId(null); }}
+                        className="text-xs px-2 py-1 rounded-lg bg-red-900/50 text-red-400 hover:bg-red-900 transition-colors"
+                      >
+                        Yes
+                      </button>
+                      <button
+                        onClick={() => setConfirmExId(null)}
+                        className="text-xs px-2 py-1 rounded-lg bg-gray-800 text-gray-400 hover:text-white transition-colors"
+                      >
+                        No
+                      </button>
+                    </>
+                  ) : (
+                    <button
+                      onClick={() => setConfirmExId(ex.id)}
+                      className="p-2 rounded-lg hover:bg-gray-800 text-gray-500 hover:text-red-400 transition-colors"
+                    >
+                      <Trash2 size={14} />
+                    </button>
+                  )}
                 </div>
               </div>
-              {musclesOpen && hasMuscles && (
-                <div className="mt-3 pt-3 border-t border-gray-800">
-                  <MuscleMap
-                    primary={ex.primary_muscles}
-                    secondary={ex.secondary_muscles}
-                    className="w-48 mx-auto"
-                  />
-                  <div className="mt-2">
-                    <MuscleMapLegend mode="exercise" />
-                  </div>
+
+              {/* Animation + muscle map side by side */}
+              {expanded && hasVisuals && (
+                <div className="mt-3 pt-3 border-t border-gray-800 flex flex-col sm:flex-row gap-3 items-start">
+                  {ex.gif_url && (
+                    <div className="w-full sm:flex-1 rounded-lg overflow-hidden bg-gray-800/60">
+                      <ExerciseAnimation
+                        gifUrl={ex.gif_url}
+                        name={ex.name}
+                        className="w-full"
+                      />
+                    </div>
+                  )}
+                  {hasMuscles && (
+                    <div className="flex flex-col items-center gap-1.5 sm:w-40 w-full">
+                      <MuscleMap
+                        primary={ex.primary_muscles}
+                        secondary={ex.secondary_muscles}
+                        className="w-36"
+                      />
+                      <MuscleMapLegend mode="exercise" />
+                    </div>
+                  )}
                 </div>
               )}
             </div>
@@ -183,12 +219,12 @@ export default function ExerciseLibrary() {
 function ExerciseFormModal({ open, exercise, onClose, onSaved }: {
   open: boolean; exercise: Exercise | null; onClose: () => void; onSaved: () => void;
 }) {
-  type FormState = { name: string; exercise_type: 'reps' | 'timed'; category: ExerciseCategory; primary_muscles: string[]; secondary_muscles: string[]; met_value: number; notes: string };
-  const blank: FormState = { name: '', exercise_type: 'reps', category: 'strength', primary_muscles: [], secondary_muscles: [], met_value: 4.0, notes: '' };
-  const [form, setForm] = useState<FormState>(exercise ? { ...blank, ...exercise } : blank);
+  type FormState = { name: string; exercise_type: 'reps' | 'timed'; category: ExerciseCategory; primary_muscles: string[]; secondary_muscles: string[]; met_value: number; notes: string; description: string; gif_url: string };
+  const blank: FormState = { name: '', exercise_type: 'reps', category: 'strength', primary_muscles: [], secondary_muscles: [], met_value: 4.0, notes: '', description: '', gif_url: '' };
+  const [form, setForm] = useState<FormState>(exercise ? { ...blank, ...exercise, description: exercise.description ?? '', gif_url: exercise.gif_url ?? '' } : blank);
 
   const save = useMutation({
-    mutationFn: () => exercise ? api.put(`/exercises/${exercise.id}`, form) : api.post('/exercises', form),
+    mutationFn: () => exercise ? api.put(`/exercises/${exercise.id}`, { ...form, description: form.description || null, gif_url: form.gif_url || null }) : api.post('/exercises', { ...form, description: form.description || null, gif_url: form.gif_url || null }),
     onSuccess: onSaved,
   });
 
@@ -202,7 +238,8 @@ function ExerciseFormModal({ open, exercise, onClose, onSaved }: {
   return (
     <Modal open={open} onClose={onClose} title={exercise ? 'Edit Exercise' : 'Add Exercise'} size="lg">
       <div className="space-y-4">
-        <Input label="Exercise name *" value={form.name} onChange={e => setForm(f => ({ ...f, name: e.target.value }))} />
+        <Input label="Exercise name *" value={form.name} onChange={e => setForm(f => ({ ...f, name: e.target.value }))}
+          onKeyDown={e => { if (e.key === 'Enter' && form.name && !save.isPending) save.mutate(); }} />
         <Select
           label="Category"
           value={form.category}
@@ -260,6 +297,24 @@ function ExerciseFormModal({ open, exercise, onClose, onSaved }: {
             <MuscleMapLegend mode="exercise" />
           </div>
         )}
+
+        <div className="space-y-1.5">
+          <p className="text-xs font-medium text-gray-400">Technique description</p>
+          <textarea
+            value={form.description}
+            onChange={e => setForm(f => ({ ...f, description: e.target.value }))}
+            placeholder="Describe setup, cues, and common mistakes. Use ⚠️ for warnings and 💡 for tips."
+            rows={5}
+            className="w-full bg-gray-800 border border-gray-700 rounded-xl px-3 py-2.5 text-sm text-white placeholder-gray-500 focus:outline-none focus:border-indigo-500 resize-none leading-relaxed"
+          />
+        </div>
+
+        <Input
+          label="Animation GIF URL (optional)"
+          value={form.gif_url}
+          onChange={e => setForm(f => ({ ...f, gif_url: e.target.value }))}
+          placeholder="https://..."
+        />
 
         <div className="flex gap-2 pt-1">
           <Button variant="secondary" onClick={onClose} className="flex-1">Cancel</Button>

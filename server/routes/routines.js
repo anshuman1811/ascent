@@ -7,7 +7,8 @@ function getRoutineWithExercises(routineId) {
   if (!routine) return null;
   const exercises = db.prepare(`
     SELECT re.*, e.name as exercise_name, e.exercise_type,
-      e.primary_muscles, e.secondary_muscles, e.met_value
+      e.primary_muscles, e.secondary_muscles, e.met_value,
+      e.description, e.notes as exercise_notes, e.gif_url
     FROM routine_exercises re
     JOIN exercises e ON e.id = re.exercise_id
     WHERE re.routine_id = ?
@@ -56,6 +57,8 @@ router.put('/:id', (req, res) => {
 
 // DELETE /api/routines/:id
 router.delete('/:id', (req, res) => {
+  // Cascade: remove exercises first, then the routine
+  db.prepare('DELETE FROM routine_exercises WHERE routine_id = ?').run(req.params.id);
   db.prepare('DELETE FROM routines WHERE id = ?').run(req.params.id);
   res.json({ ok: true });
 });

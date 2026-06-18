@@ -2,6 +2,7 @@ import { Outlet, NavLink } from 'react-router-dom';
 import { Settings } from 'lucide-react';
 import Nav from './Nav';
 import UserSwitcher from './UserSwitcher';
+import AscentLogo from '../ui/AscentLogo';
 import { useAppStore } from '../../store/appStore';
 
 interface Props { userId?: number; }
@@ -12,11 +13,11 @@ export default function Layout({ userId }: Props) {
   const user = users.find(u => u.id === effectiveUserId);
 
   return (
-    <div className="flex flex-col h-screen bg-gray-950 md:flex-row">
-      {/* Sidebar — desktop */}
-      <aside className="hidden md:flex md:flex-col md:w-56 md:shrink-0 bg-gray-900 border-r border-gray-800">
+    <div className="flex flex-col h-screen bg-gray-950 lg:flex-row">
+      {/* Desktop sidebar (lg+) */}
+      <aside className="hidden lg:flex lg:flex-col lg:w-56 lg:shrink-0 bg-gray-900 border-r border-gray-800">
         <div className="p-4 border-b border-gray-800">
-          <h1 className="text-lg font-bold tracking-tight text-white">FitTrack</h1>
+          <AscentLogo size={26} showText textSize="text-lg" />
           {!userId && <UserSwitcher users={users} activeId={activeUserId} onChange={setActiveUserId} />}
           {user && (
             <div className="mt-2 flex items-center gap-2">
@@ -29,10 +30,14 @@ export default function Layout({ userId }: Props) {
       </aside>
 
       {/* Main content */}
-      <main className="flex-1 overflow-y-auto pb-20 md:pb-0">
-        {/* Mobile header */}
-        <header className="md:hidden flex items-center justify-between px-4 py-3 bg-gray-900 border-b border-gray-800 sticky top-0 z-30">
-          <h1 className="text-base font-bold tracking-tight">FitTrack</h1>
+      <main className="flex-1 overflow-y-auto
+        pb-20 portrait:pb-20 landscape:pb-0
+        pl-0 landscape:pl-11
+        lg:pb-0 lg:pl-0">
+
+        {/* Mobile header — portrait only; landscape uses the icon rail instead */}
+        <header className="portrait:flex landscape:hidden lg:hidden items-center justify-between px-4 py-3 bg-gray-900 border-b border-gray-800 sticky top-0 z-30">
+          <AscentLogo size={22} showText textSize="text-base" />
           <div className="flex items-center gap-2">
             {!userId && <UserSwitcher users={users} activeId={activeUserId} onChange={setActiveUserId} compact />}
             {user && (
@@ -48,13 +53,14 @@ export default function Layout({ userId }: Props) {
             </NavLink>
           </div>
         </header>
+
         <div className="max-w-3xl mx-auto px-4 py-4 md:px-6 md:py-6">
           <Outlet context={{ userId: effectiveUserId }} />
         </div>
       </main>
 
-      {/* Bottom nav — mobile */}
-      <Nav orientation="horizontal" className="md:hidden" />
+      {/* Mobile nav — handles both portrait (bottom bar) and landscape (left rail) */}
+      <Nav orientation="horizontal" className="lg:hidden" />
     </div>
   );
 }

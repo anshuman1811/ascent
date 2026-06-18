@@ -13,7 +13,14 @@ export interface User {
   carbs_target_g?: number;
   fat_target_g?: number;
   fiber_target_g?: number;
+  sugar_target_g?: number;
   sodium_target_mg?: number;
+  added_sugar_target_g?: number;
+  saturated_fat_target_g?: number;
+  cholesterol_target_mg?: number;
+  potassium_target_mg?: number;
+  /** JSON-parsed array of macro field names shown on the dashboard. NULL = use defaults. */
+  tracked_macros?: string[];
   weight_goal_type: 'lose' | 'maintain' | 'gain';
   target_weight_value?: number;
   target_weight_unit: string;
@@ -35,6 +42,8 @@ export interface Food {
   saturated_fat_g: number;
   fiber_g: number;
   sugar_g: number;
+  /** Added sugar (excludes natural sugars). NULL = data not available for this food. */
+  added_sugar_g?: number | null;
   cholesterol_mg: number;
   sodium_mg: number;
   potassium_mg: number;
@@ -58,6 +67,7 @@ export interface MealItem {
   saturated_fat_g: number;
   fiber_g: number;
   sugar_g: number;
+  added_sugar_g?: number | null;
   cholesterol_mg: number;
   sodium_mg: number;
   potassium_mg: number;
@@ -83,6 +93,7 @@ export interface MacroTotals {
   saturated_fat_g: number;
   fiber_g: number;
   sugar_g: number;
+  added_sugar_g: number;
   cholesterol_mg: number;
   sodium_mg: number;
   potassium_mg: number;
@@ -99,6 +110,8 @@ export interface Exercise {
   secondary_muscles: string[];
   met_value: number;
   notes?: string;
+  description?: string;
+  gif_url?: string;
 }
 
 export interface RoutineExercise {
@@ -117,6 +130,9 @@ export interface RoutineExercise {
   weight_value?: number;
   weight_unit: string;
   rest_seconds: number;
+  description?: string;
+  exercise_notes?: string;
+  gif_url?: string;
 }
 
 export interface Routine {
@@ -137,6 +153,8 @@ export interface SetLog {
   actual_weight_unit: string;
   is_pb: number;
   logged_at: string;
+  actual_rest_seconds?: number;
+  notes?: string;
 }
 
 export interface SessionExercise {
@@ -146,6 +164,7 @@ export interface SessionExercise {
   exercise_name: string;
   exercise_type: 'reps' | 'timed';
   primary_muscles: string[];
+  secondary_muscles: string[];
   order_index: number;
   target_sets: number;
   target_reps?: number;
@@ -155,6 +174,8 @@ export interface SessionExercise {
   rest_seconds: number;
   status: 'pending' | 'in_progress' | 'completed' | 'skipped';
   sets: SetLog[];
+  description?: string;
+  gif_url?: string;
 }
 
 export interface WorkoutSession {
@@ -189,3 +210,58 @@ export interface WeightLog {
   weight_unit: string;
   logged_at: string;
 }
+
+export interface FoodIngredient {
+  id: number;
+  food_id: number;
+  ingredient_food_id: number;
+  quantity: number;
+  // denormalized from the ingredient food
+  name: string;
+  brand?: string;
+  serving_size: number;
+  serving_unit: string;
+  calories: number;
+  protein_g: number;
+  carbs_g: number;
+  fat_g: number;
+  fiber_g: number;
+  sugar_g: number;
+}
+
+// ─── Macro configuration ──────────────────────────────────────────────────────
+
+export type MacroKey =
+  | 'protein_g' | 'carbs_g' | 'fat_g' | 'fiber_g'
+  | 'sugar_g' | 'added_sugar_g' | 'saturated_fat_g'
+  | 'sodium_mg' | 'cholesterol_mg' | 'potassium_mg';
+
+export interface MacroInfo {
+  key: MacroKey;
+  label: string;
+  sublabel?: string;
+  /** Key on User for the target value; null = informational only, no target */
+  targetKey: keyof User | null;
+  unit: string;
+  pattern: 'solid' | 'striped' | 'dotted';
+  /** Default tracked on dashboard for new users */
+  defaultTracked: boolean;
+  /** Slider/input max for the Profile UI */
+  inputMax: number;
+  inputStep: number;
+}
+
+export const MACRO_CONFIG: MacroInfo[] = [
+  { key: 'protein_g',       label: 'Protein',       unit: 'g',  targetKey: 'protein_target_g',       pattern: 'solid',   defaultTracked: true,  inputMax: 300,  inputStep: 5 },
+  { key: 'carbs_g',         label: 'Carbs',         unit: 'g',  targetKey: 'carbs_target_g',         pattern: 'striped', defaultTracked: true,  inputMax: 600,  inputStep: 10 },
+  { key: 'fat_g',           label: 'Fat',           unit: 'g',  targetKey: 'fat_target_g',           pattern: 'dotted',  defaultTracked: true,  inputMax: 200,  inputStep: 5 },
+  { key: 'fiber_g',         label: 'Fiber',         unit: 'g',  targetKey: 'fiber_target_g',         pattern: 'solid',   defaultTracked: true,  inputMax: 60,   inputStep: 1 },
+  { key: 'sugar_g',         label: 'Total Sugar',   unit: 'g',  targetKey: null,                     pattern: 'striped', defaultTracked: false, inputMax: 200,  inputStep: 5,  sublabel: 'incl. natural' },
+  { key: 'added_sugar_g',   label: 'Added Sugar',   unit: 'g',  targetKey: 'added_sugar_target_g',   pattern: 'striped', defaultTracked: false, inputMax: 100,  inputStep: 5,  sublabel: 'excl. natural' },
+  { key: 'saturated_fat_g', label: 'Saturated Fat', unit: 'g',  targetKey: 'saturated_fat_target_g', pattern: 'dotted',  defaultTracked: false, inputMax: 50,   inputStep: 1 },
+  { key: 'sodium_mg',       label: 'Sodium',        unit: 'mg', targetKey: 'sodium_target_mg',       pattern: 'solid',   defaultTracked: false, inputMax: 5000, inputStep: 100 },
+  { key: 'cholesterol_mg',  label: 'Cholesterol',   unit: 'mg', targetKey: 'cholesterol_target_mg',  pattern: 'striped', defaultTracked: false, inputMax: 500,  inputStep: 10 },
+  { key: 'potassium_mg',    label: 'Potassium',     unit: 'mg', targetKey: 'potassium_target_mg',    pattern: 'dotted',  defaultTracked: false, inputMax: 5000, inputStep: 100 },
+];
+
+export const DEFAULT_TRACKED_MACROS: MacroKey[] = ['protein_g', 'carbs_g', 'fat_g', 'fiber_g'];

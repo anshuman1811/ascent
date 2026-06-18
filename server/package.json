@@ -1,5 +1,5 @@
 {
-  "name": "fitness-tracker-server",
+  "name": "ascent-server",
   "version": "1.0.0",
   "description": "Fitness tracker API server",
   "main": "index.js",

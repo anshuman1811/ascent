@@ -15,9 +15,14 @@ router.get('/:userId/daily', (req, res) => {
 
   const profile = db.prepare(`
     SELECT calorie_target, protein_target_g, carbs_target_g, fat_target_g,
-      fiber_target_g, sodium_target_mg, weight_unit
+      fiber_target_g, sugar_target_g, sodium_target_mg, weight_unit,
+      tracked_macros, added_sugar_target_g, saturated_fat_target_g,
+      cholesterol_target_mg, potassium_target_mg
     FROM user_profiles WHERE user_id = ?
   `).get(userId);
+  if (profile && profile.tracked_macros) {
+    try { profile.tracked_macros = JSON.parse(profile.tracked_macros); } catch { profile.tracked_macros = null; }
+  }
 
   // Meal totals for the day
   const mealTotals = db.prepare(`
@@ -29,6 +34,7 @@ router.get('/:userId/daily', (req, res) => {
       COALESCE(SUM(mi.saturated_fat_g), 0) as saturated_fat_g,
       COALESCE(SUM(mi.fiber_g),         0) as fiber_g,
       COALESCE(SUM(mi.sugar_g),         0) as sugar_g,
+      COALESCE(SUM(mi.added_sugar_g),   0) as added_sugar_g,
       COALESCE(SUM(mi.cholesterol_mg),  0) as cholesterol_mg,
       COALESCE(SUM(mi.sodium_mg),       0) as sodium_mg,
       COALESCE(SUM(mi.potassium_mg),    0) as potassium_mg

@@ -1,9 +1,10 @@
-import { BrowserRouter, MemoryRouter, Routes, Route, Navigate, useSearchParams } from 'react-router-dom';
+import { BrowserRouter, Routes, Route, Navigate, useSearchParams } from 'react-router-dom';
 import { useQuery } from '@tanstack/react-query';
 import { useEffect } from 'react';
 import { api } from './api/client';
 import { useAppStore } from './store/appStore';
 import type { User } from './types';
+import { ToastProvider } from './components/ui/Toast';
 import Layout from './components/layout/Layout';
 import Dashboard from './pages/Dashboard';
 import FoodLog from './pages/FoodLog';
@@ -56,17 +57,17 @@ function AppInner() {
 
   if (isSplit) {
     return (
-      <div className="flex h-screen overflow-hidden">
-        <div className="flex-1 border-r border-gray-800 overflow-auto">
-          {/* Each pane gets its own MemoryRouter so navigation is independent */}
-          <MemoryRouter initialEntries={['/dashboard']}>
-            <AppRoutes userId={splitUserIds[0]} />
-          </MemoryRouter>
+      // Portrait: stack vertically; Landscape/wide: side by side
+      <div className="flex portrait:flex-col landscape:flex-row sm:flex-row h-screen overflow-hidden bg-gray-950">
+        <div className="flex-1 portrait:border-b landscape:border-r sm:border-r border-gray-800 overflow-auto min-h-0">
+          <div className="max-w-2xl mx-auto px-4 py-4">
+            <Dashboard userId={splitUserIds[0]} hidePeer />
+          </div>
         </div>
-        <div className="flex-1 overflow-auto">
-          <MemoryRouter initialEntries={['/dashboard']}>
-            <AppRoutes userId={splitUserIds[1]} />
-          </MemoryRouter>
+        <div className="flex-1 overflow-auto min-h-0">
+          <div className="max-w-2xl mx-auto px-4 py-4">
+            <Dashboard userId={splitUserIds[1]} hidePeer />
+          </div>
         </div>
       </div>
     );
@@ -77,8 +78,10 @@ function AppInner() {
 
 export default function App() {
   return (
-    <BrowserRouter>
-      <AppInner />
+    <BrowserRouter future={{ v7_startTransition: true, v7_relativeSplatPath: true }}>
+      <ToastProvider>
+        <AppInner />
+      </ToastProvider>
     </BrowserRouter>
   );
 }

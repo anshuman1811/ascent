@@ -1,10 +1,13 @@
 import { useQuery } from '@tanstack/react-query';
-import { Link } from 'react-router-dom';
+import { useNavigate } from 'react-router-dom';
 import { ExternalLink, Database, Users, Monitor } from 'lucide-react';
 import { api } from '../api/client';
+import { useAppStore } from '../store/appStore';
 import type { User } from '../types';
 
 export default function Settings() {
+  const navigate = useNavigate();
+  const { activeUserId, setActiveUserId } = useAppStore();
   const { data: users = [] } = useQuery({
     queryKey: ['users'],
     queryFn: () => api.get<User[]>('/users'),
@@ -20,19 +23,23 @@ export default function Settings() {
           <Users size={12} /> Per-User Settings
         </p>
         {users.map(u => (
-          <Link key={u.id} to="/profile"
-            className="flex items-center justify-between py-2 px-3 rounded-xl hover:bg-gray-800 transition-colors">
+          <button
+            key={u.id}
+            onClick={() => { setActiveUserId(u.id); navigate('/profile'); }}
+            className="w-full flex items-center justify-between py-2 px-3 rounded-xl hover:bg-gray-800 transition-colors"
+          >
             <div className="flex items-center gap-2.5">
               <span className="w-6 h-6 rounded-full flex items-center justify-center text-xs font-bold text-white"
                 style={{ background: u.avatar_color }}>
                 {u.name[0]}
               </span>
               <span className="text-sm text-white">{u.name}</span>
+              {u.id === activeUserId && <span className="text-[10px] text-indigo-400">active</span>}
             </div>
             <span className="text-xs text-gray-500">
               {u.weight_unit} · {u.volume_unit} · {u.length_unit}
             </span>
-          </Link>
+          </button>
         ))}
         <p className="text-xs text-gray-600 px-3">Units and targets are configured per-user in their Profile.</p>
       </div>
@@ -70,7 +77,7 @@ export default function Settings() {
       </div>
 
       <div className="text-center text-xs text-gray-700 pt-4">
-        FitTrack · Local build · Running on {window.location.host}
+        Ascent · Local build · Running on {window.location.host}
       </div>
     </div>
   );

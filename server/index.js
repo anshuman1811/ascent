@@ -53,7 +53,7 @@ function getLocalIPs() {
 }
 
 app.listen(PORT, '0.0.0.0', () => {
-  console.log(`\nFitTrack running on port ${PORT}`);
+  console.log(`\nAscent running on port ${PORT}`);
   console.log(`  Local:   http://localhost:${PORT}`);
   for (const ip of getLocalIPs()) {
     console.log(`  Network: http://${ip}:${PORT}  ← use this on iPad/phone`);

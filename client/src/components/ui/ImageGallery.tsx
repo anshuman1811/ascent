@@ -25,6 +25,7 @@ export default function ImageGallery({ entityType, entityId, compact = false }: 
   const fileRef = useRef<HTMLInputElement>(null);
   const [lightbox, setLightbox] = useState<number | null>(null); // image index in array
   const [caption, setCaption] = useState('');
+  const [confirmDeletePhoto, setConfirmDeletePhoto] = useState(false);
 
   const queryKey = ['images', entityType, entityId];
 
@@ -61,9 +62,11 @@ export default function ImageGallery({ entityType, entityId, compact = false }: 
   const openLightbox = (idx: number) => {
     setLightbox(idx);
     setCaption(images[idx]?.caption ?? '');
+    setConfirmDeletePhoto(false);
   };
 
   const closeLightbox = () => {
+    setConfirmDeletePhoto(false);
     if (lightbox !== null && images[lightbox]) {
       const img = images[lightbox];
       const trimmed = caption.trim();
@@ -152,12 +155,30 @@ export default function ImageGallery({ entityType, entityId, compact = false }: 
           <div className="flex items-center justify-between px-4 py-3 shrink-0" onClick={e => e.stopPropagation()}>
             <span className="text-xs text-gray-400">{lightbox + 1} / {images.length}</span>
             <div className="flex items-center gap-2">
-              <button
-                onClick={() => { if (confirm('Delete this photo?')) deleteImage.mutate(images[lightbox!].id); }}
-                className="p-2 rounded-lg bg-gray-800 text-red-400 hover:bg-gray-700"
-              >
-                <Trash2 size={16} />
-              </button>
+              {confirmDeletePhoto ? (
+                <>
+                  <span className="text-xs text-gray-400">Delete photo?</span>
+                  <button
+                    onClick={() => { deleteImage.mutate(images[lightbox!].id); setConfirmDeletePhoto(false); }}
+                    className="text-xs px-2.5 py-1.5 rounded-lg bg-red-900/60 text-red-400 hover:bg-red-900 transition-colors"
+                  >
+                    Delete
+                  </button>
+                  <button
+                    onClick={() => setConfirmDeletePhoto(false)}
+                    className="text-xs px-2.5 py-1.5 rounded-lg bg-gray-800 text-gray-400 hover:text-white transition-colors"
+                  >
+                    Cancel
+                  </button>
+                </>
+              ) : (
+                <button
+                  onClick={() => setConfirmDeletePhoto(true)}
+                  className="p-2 rounded-lg bg-gray-800 text-red-400 hover:bg-gray-700"
+                >
+                  <Trash2 size={16} />
+                </button>
+              )}
               <button onClick={closeLightbox} className="p-2 rounded-lg bg-gray-800 text-gray-400 hover:bg-gray-700">
                 <X size={16} />
               </button>
