@@ -122,6 +122,15 @@ function MacroTargetInput({ value, onChange, max, step, unit }: {
 // Goal offsets applied to TDEE to get calorie target
 const GOAL_OFFSET: Record<string, number> = { lose: -500, maintain: 0, gain: 250 };
 
+// NEAT offset above pure sedentary BMR × 1.2 — accounts for background daily movement
+// (walking to meetings, stairs, errands) EXCLUDING formal workouts.
+// Formal workout calories are added dynamically on workout days in the dashboard.
+const NEAT_OFFSET: Record<string, number> = {
+  sedentary: 0,    // desk all day, car commute, minimal movement
+  light: 200,      // some walking, ~5–8k steps, office with movement
+  moderate: 400,   // active day, ~10k+ steps, stand-up desk, active commute
+};
+
 // Evidence-based protein multipliers (g/kg body weight) per goal
 // Sources: ISSN Position Stand, Helms et al. 2014, Morton et al. 2018
 const PROTEIN_PER_KG: Record<string, number> = { lose: 2.0, maintain: 1.6, gain: 1.8 };
@@ -242,9 +251,10 @@ function TargetsTab({ user, weightLog, onSave, saving }: { user: User; weightLog
       sex: form.sex as any,
     };
     const sedentaryTdee = calculateTDEE({ ...baseParams, activity_level: 'sedentary' });
+    const neatOffset = NEAT_OFFSET[form.activity_level] ?? 0;
 
     const offset = GOAL_OFFSET[form.weight_goal_type] ?? 0;
-    const target = Math.max(1200, sedentaryTdee + offset);
+    const target = Math.max(1200, sedentaryTdee + neatOffset + offset);
 
     setForm(f => {
       // Only auto-fill macros if they're missing (don't override user's custom targets)
@@ -253,7 +263,7 @@ function TargetsTab({ user, weightLog, onSave, saving }: { user: User; weightLog
       return { ...f, tdee_estimate: String(sedentaryTdee), calorie_target: String(target), ...macros };
     });
   // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [form.birth_date, form.sex, form.height_value, form.height_unit, form.weight_goal_type, latestWeightKg]);
+  }, [form.birth_date, form.sex, form.height_value, form.height_unit, form.activity_level, form.weight_goal_type, latestWeightKg]);
 
   // When goal changes, just update the field — useEffect above handles calorie_target recalc
   function handleGoalChange(e: React.ChangeEvent<HTMLSelectElement>) {
@@ -294,6 +304,17 @@ function TargetsTab({ user, weightLog, onSave, saving }: { user: User; weightLog
             { value: 'ft', label: 'ft (feet)' }, { value: 'cm', label: 'cm' }
           ]} />
         </div>
+        <Select
+          label="Daily movement (excl. workouts)"
+          value={form.activity_level === 'active' || form.activity_level === 'very_active' ? 'moderate' : form.activity_level}
+          onChange={sel('activity_level')}
+          options={[
+            { value: 'sedentary', label: 'Sedentary — desk all day, minimal walking (+0 kcal)' },
+            { value: 'light',     label: 'Light — some walking, ~5–8k steps/day (+200 kcal)' },
+            { value: 'moderate',  label: 'Active — 10k+ steps, active commute (+400 kcal)' },
+          ]}
+        />
+        <p className="text-[11px] text-gray-600">Background NEAT only — logged workouts add on top daily</p>
       </div>
 
       <div className="bg-gray-900 rounded-2xl border border-gray-800 p-4 space-y-3">
@@ -312,15 +333,29 @@ function TargetsTab({ user, weightLog, onSave, saving }: { user: User; weightLog
           <Input label="Sedentary TDEE (kcal)" type="number" value={form.tdee_estimate} onChange={num('tdee_estimate')} />
           <Input label="Base daily target (kcal)" type="number" value={form.calorie_target} onChange={num('calorie_target')} />
         </div>
-        {form.tdee_estimate && form.calorie_target && (
-          <p className="text-xs text-gray-500">
-            {Number(form.calorie_target) < Number(form.tdee_estimate)
-              ? `${Math.round(Number(form.tdee_estimate) - Number(form.calorie_target))} kcal rest-day deficit · ~${((Number(form.tdee_estimate) - Number(form.calorie_target)) * 7 / 3500).toFixed(1)} lb/week`
-              : Number(form.calorie_target) > Number(form.tdee_estimate)
-              ? `${Math.round(Number(form.calorie_target) - Number(form.tdee_estimate))} kcal/day surplus`
-              : 'Maintenance calories'}
-          </p>
-        )}
+        {form.tdee_estimate && form.calorie_target && (() => {
+          const sedTdee = Number(form.tdee_estimate);
+          const neatOff = NEAT_OFFSET[form.activity_level] ?? 0;
+          const base = sedTdee + neatOff;
+          const target = Number(form.calorie_target);
+          const diff = target - base;
+          return (
+            <div className="space-y-1">
+              {neatOff > 0 && (
+                <p className="text-[11px] text-gray-600">
+                  {sedTdee} sedentary + {neatOff} NEAT = {base} kcal base
+                </p>
+              )}
+              <p className="text-xs text-gray-500">
+                {diff < 0
+                  ? `${Math.abs(diff)} kcal/day deficit · ~${(Math.abs(diff) * 7 / 3500).toFixed(1)} lb/week`
+                  : diff > 0
+                  ? `${diff} kcal/day surplus`
+                  : 'Maintenance'}
+              </p>
+            </div>
+          );
+        })()}
       </div>
 
       <div className="bg-gray-900 rounded-2xl border border-gray-800 p-4 space-y-3">
