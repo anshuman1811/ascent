@@ -38,7 +38,7 @@ export function MacroPills({ macros, compact }: MacroPillsProps) {
     ? [
         { label: 'Cal', value: Math.round(macros.calories) },
         { label: 'P', value: `${Math.round(macros.protein_g)}g` },
-        { label: 'C', value: `${Math.round(macros.carbs_g)}g` },
+        { label: 'Net C', value: `${Math.max(0, Math.round(macros.carbs_g - macros.fiber_g))}g` },
         { label: 'Fat', value: `${Math.round(macros.fat_g)}g` },
         { label: 'Fib', value: `${Math.round(macros.fiber_g)}g` },
       ]

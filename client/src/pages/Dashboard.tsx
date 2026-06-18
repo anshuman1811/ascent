@@ -283,8 +283,8 @@ export default function Dashboard({ userId: propUserId, hidePeer }: { userId?: n
                 {s && (
                   <div className="flex gap-2 mt-1.5 text-[10px] flex-wrap">
                     <span className="text-sky-400">{Math.round(s.meals.protein_g)}P</span>
-                    <span className="text-amber-400">{Math.round(s.meals.carbs_g)}C</span>
-                    <span className="text-orange-400">{Math.round(s.meals.fat_g)}Fat</span>
+                    <span className="text-amber-400">{Math.max(0, Math.round(s.meals.carbs_g - s.meals.fiber_g))}NC</span>
+                    <span className="text-orange-400">{Math.round(s.meals.fat_g)}F</span>
                     <span className="text-emerald-400">{Math.round(s.meals.fiber_g)}Fib</span>
                   </div>
                 )}
@@ -431,8 +431,15 @@ export default function Dashboard({ userId: propUserId, hidePeer }: { userId?: n
             </div>
             <div className="space-y-2">
               {macrosInTracked.map(macro => {
-                const val = (summary.meals as any)[macro.key] ?? 0;
-                const target = macro.targetKey ? (summary.targets as any)[macro.targetKey] : null;
+                // Net Carbs = total carbs − fiber; target = carbs_target − fiber_target
+                const rawVal = (summary.meals as any)[macro.key] ?? 0;
+                const val = macro.key === 'carbs_g'
+                  ? Math.max(0, rawVal - (summary.meals.fiber_g ?? 0))
+                  : rawVal;
+                const rawTarget = macro.targetKey ? (summary.targets as any)[macro.targetKey] : null;
+                const target = macro.key === 'carbs_g' && rawTarget != null
+                  ? Math.max(0, rawTarget - (summary.targets.fiber_target_g ?? 0)) || null
+                  : rawTarget;
                 return (
                   <div key={macro.key} className="space-y-1">
                     <div className="flex justify-between text-xs">

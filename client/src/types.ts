@@ -254,7 +254,7 @@ export interface MacroInfo {
 
 export const MACRO_CONFIG: MacroInfo[] = [
   { key: 'protein_g',       label: 'Protein',       unit: 'g',  targetKey: 'protein_target_g',       color: '#38bdf8', defaultTracked: true,  inputMax: 300,  inputStep: 5 },
-  { key: 'carbs_g',         label: 'Carbs',         unit: 'g',  targetKey: 'carbs_target_g',         color: '#fbbf24', defaultTracked: true,  inputMax: 600,  inputStep: 10 },
+  { key: 'carbs_g',         label: 'Net Carbs',     unit: 'g',  targetKey: 'carbs_target_g',         color: '#fbbf24', defaultTracked: true,  inputMax: 600,  inputStep: 10, sublabel: 'total − fiber' },
   { key: 'fat_g',           label: 'Fat',           unit: 'g',  targetKey: 'fat_target_g',           color: '#fb923c', defaultTracked: true,  inputMax: 200,  inputStep: 5 },
   { key: 'fiber_g',         label: 'Fiber',         unit: 'g',  targetKey: 'fiber_target_g',         color: '#34d399', defaultTracked: true,  inputMax: 60,   inputStep: 1 },
   { key: 'sugar_g',         label: 'Total Sugar',   unit: 'g',  targetKey: null,                     color: '#facc15', defaultTracked: false, inputMax: 200,  inputStep: 5,  sublabel: 'incl. natural' },
