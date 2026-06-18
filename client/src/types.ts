@@ -21,7 +21,7 @@ export interface User {
   potassium_target_mg?: number;
   /** JSON-parsed array of macro field names shown on the dashboard. NULL = use defaults. */
   tracked_macros?: string[];
-  weight_goal_type: 'lose' | 'maintain' | 'gain';
+  weight_goal_type: 'lose' | 'lose_mild' | 'maintain' | 'gain' | 'gain_aggressive';
   target_weight_value?: number;
   target_weight_unit: string;
   weight_unit: 'lb' | 'kg';

@@ -120,7 +120,7 @@ function MacroTargetInput({ value, onChange, max, step, unit }: {
 }
 
 // Goal offsets applied to TDEE to get calorie target
-const GOAL_OFFSET: Record<string, number> = { lose: -500, maintain: 0, gain: 250 };
+const GOAL_OFFSET: Record<string, number> = { lose: -500, lose_mild: -250, maintain: 0, gain: 250, gain_aggressive: 500 };
 
 // NEAT offset above pure sedentary BMR × 1.2 — accounts for background daily movement
 // (walking to meetings, stairs, errands) EXCLUDING formal workouts.
@@ -133,7 +133,7 @@ const NEAT_OFFSET: Record<string, number> = {
 
 // Evidence-based protein multipliers (g/kg body weight) per goal
 // Sources: ISSN Position Stand, Helms et al. 2014, Morton et al. 2018
-const PROTEIN_PER_KG: Record<string, number> = { lose: 2.0, maintain: 1.6, gain: 1.8 };
+const PROTEIN_PER_KG: Record<string, number> = { lose: 2.0, lose_mild: 1.8, maintain: 1.6, gain: 1.8, gain_aggressive: 2.0 };
 
 /** Pure helper — compute evidence-based macro targets from a calorie goal + body weight */
 function computeMacros(
@@ -325,9 +325,11 @@ function TargetsTab({ user, weightLog, onSave, saving }: { user: User; weightLog
           )}
         </div>
         <Select label="Goal" value={form.weight_goal_type} onChange={handleGoalChange} options={[
-          { value: 'lose', label: '⬇ Lose weight  (−500 kcal/day)' },
-          { value: 'maintain', label: '→ Maintain' },
-          { value: 'gain', label: '⬆ Gain weight  (+250 kcal/day)' },
+          { value: 'lose',            label: '⬇⬇ Cut  (−500 kcal/day · ~1 lb/week)' },
+          { value: 'lose_mild',       label: '⬇ Mild cut  (−250 kcal/day · ~0.5 lb/week)' },
+          { value: 'maintain',        label: '→ Maintain' },
+          { value: 'gain',            label: '⬆ Lean gain  (+250 kcal/day)' },
+          { value: 'gain_aggressive', label: '⬆⬆ Bulk  (+500 kcal/day)' },
         ]} />
         <div className="grid grid-cols-2 gap-2">
           <Input label="Sedentary TDEE (kcal)" type="number" value={form.tdee_estimate} onChange={num('tdee_estimate')} />
