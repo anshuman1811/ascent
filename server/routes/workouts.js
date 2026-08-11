@@ -8,7 +8,7 @@ function getSession(sessionId) {
   const session = db.prepare('SELECT * FROM workout_sessions WHERE id = ?').get(sessionId);
   if (!session) return null;
   const exercises = db.prepare(`
-    SELECT se.*, e.name as exercise_name, e.exercise_type, e.primary_muscles,
+    SELECT se.*, e.name as exercise_name, e.exercise_type, e.category, e.primary_muscles,
       e.secondary_muscles, e.met_value, e.description, e.gif_url
     FROM session_exercises se
     JOIN exercises e ON e.id = se.exercise_id
@@ -27,66 +27,128 @@ function getSession(sessionId) {
   return { ...session, exercises };
 }
 
-function checkAndUpdatePB(userId, exerciseId, sessionId, actualReps, actualDurationSecs, weightValue, weightUnit) {
-  let isPB = false;
+// Rebuilds is_pb on every set_log for (userId, exerciseId) and the personal_bests row(s)
+// from scratch, by replaying full history in chronological order. This is the single
+// source of truth for PB state — called after any mutation (new set, edited set, deleted
+// session) so edits/deletions can never leave a stale or orphaned PB behind.
+// Tracks three independent PB types per exercise: weighted reps (max weight; rep_count is
+// just a "best reps at that weight" reference), bodyweight reps (max reps), and timed (max duration).
+function recomputePBsForExercise(userId, exerciseId) {
+  // Warmup/cooldown moves (stretches, primers, mobility drills) aren't trained for
+  // progressive overload — tracking a "PR" on them doesn't make sense. Clear any
+  // stale is_pb flags/personal_bests left over from before this category existed
+  // and skip recomputation entirely.
+  const { category } = db.prepare('SELECT category FROM exercises WHERE id = ?').get(exerciseId);
+  if (category === 'warmup' || category === 'cooldown') {
+    db.prepare(`
+      UPDATE set_logs SET is_pb = 0 WHERE id IN (
+        SELECT sl.id FROM set_logs sl JOIN session_exercises se ON se.id = sl.session_exercise_id
+        JOIN workout_sessions ws ON ws.id = se.session_id
+        WHERE ws.user_id = ? AND se.exercise_id = ?
+      )
+    `).run(userId, exerciseId);
+    db.prepare('DELETE FROM personal_bests WHERE user_id = ? AND exercise_id = ?').run(userId, exerciseId);
+    return;
+  }
 
-  if (actualReps && weightValue) {
-    const existing = db.prepare(`
-      SELECT * FROM personal_bests WHERE user_id = ? AND exercise_id = ? AND rep_count = ?
-    `).get(userId, exerciseId, actualReps);
+  const allSets = db.prepare(`
+    SELECT sl.id, sl.actual_reps, sl.actual_duration_seconds, sl.actual_weight_value, sl.actual_weight_unit, sl.logged_at, se.session_id
+    FROM set_logs sl
+    JOIN session_exercises se ON se.id = sl.session_exercise_id
+    JOIN workout_sessions ws ON ws.id = se.session_id
+    WHERE ws.user_id = ? AND se.exercise_id = ?
+    ORDER BY sl.logged_at ASC, sl.id ASC
+  `).all(userId, exerciseId);
 
-    const newKg = toKg(weightValue, weightUnit);
-    const existingKg = existing ? toKg(existing.weight_value, existing.weight_unit) : -1;
+  const updateIsPb = db.prepare('UPDATE set_logs SET is_pb = ? WHERE id = ?');
 
-    if (newKg > existingKg) {
-      isPB = true;
-      if (existing) {
-        db.prepare(`
-          UPDATE personal_bests SET weight_value = ?, weight_unit = ?,
-            achieved_at = datetime('now'), session_id = ?
-          WHERE id = ?
-        `).run(weightValue, weightUnit, sessionId, existing.id);
-      } else {
-        db.prepare(`
-          INSERT INTO personal_bests (user_id, exercise_id, rep_count, weight_value, weight_unit, achieved_at, session_id)
-          VALUES (?, ?, ?, ?, ?, datetime('now'), ?)
-        `).run(userId, exerciseId, actualReps, weightValue, weightUnit, sessionId);
+  let bestWeightKg = -1, bestWeightRow = null;
+  let bestBodyweightReps = -1, bestBodyweightRow = null;
+  let bestDuration = -1, bestDurationRow = null;
+
+  for (const s of allSets) {
+    if (s.actual_reps != null && s.actual_weight_value && s.actual_weight_value > 0) {
+      const kg = toKg(s.actual_weight_value, s.actual_weight_unit);
+      let isPb = 0;
+      if (kg > bestWeightKg) { isPb = 1; bestWeightKg = kg; bestWeightRow = s; }
+      else if (kg === bestWeightKg) {
+        isPb = 2;
+        if (s.actual_reps > (bestWeightRow?.actual_reps ?? 0)) bestWeightRow = s;
       }
-    }
-  } else if (actualDurationSecs) {
-    const existing = db.prepare(`
-      SELECT * FROM personal_bests WHERE user_id = ? AND exercise_id = ? AND rep_count IS NULL
-    `).get(userId, exerciseId);
-
-    if (!existing || actualDurationSecs > existing.duration_seconds) {
-      isPB = true;
-      if (existing) {
-        db.prepare(`
-          UPDATE personal_bests SET duration_seconds = ?, achieved_at = datetime('now'), session_id = ?
-          WHERE id = ?
-        `).run(actualDurationSecs, sessionId, existing.id);
-      } else {
-        db.prepare(`
-          INSERT INTO personal_bests (user_id, exercise_id, duration_seconds, achieved_at, session_id)
-          VALUES (?, ?, ?, datetime('now'), ?)
-        `).run(userId, exerciseId, actualDurationSecs, sessionId);
-      }
+      updateIsPb.run(isPb, s.id);
+    } else if (s.actual_reps != null) {
+      let isPb = 0;
+      if (s.actual_reps > bestBodyweightReps) { isPb = 1; bestBodyweightReps = s.actual_reps; bestBodyweightRow = s; }
+      else if (s.actual_reps === bestBodyweightReps) { isPb = 2; }
+      updateIsPb.run(isPb, s.id);
+    } else if (s.actual_duration_seconds != null) {
+      let isPb = 0;
+      if (s.actual_duration_seconds > bestDuration) { isPb = 1; bestDuration = s.actual_duration_seconds; bestDurationRow = s; }
+      else if (s.actual_duration_seconds === bestDuration) { isPb = 2; }
+      updateIsPb.run(isPb, s.id);
     }
   }
 
-  return isPB;
+  // If this exercise has any weighted history, a 0-weight set is not a meaningful
+  // "bodyweight PR" — it's a data entry error (forgot to fill in weight). Clear those
+  // is_pb flags and don't persist a bodyweight row alongside the weighted one.
+  if (bestWeightKg > -1 && bestBodyweightRow) {
+    for (const s of allSets) {
+      if (s.actual_reps != null && (!s.actual_weight_value || s.actual_weight_value === 0)) {
+        updateIsPb.run(0, s.id);
+      }
+    }
+    bestBodyweightRow = null;
+  }
+
+  const syncRow = (matchClause, winnerRow, fields) => {
+    const existing = db.prepare(`SELECT id FROM personal_bests WHERE user_id = ? AND exercise_id = ? AND ${matchClause}`)
+      .get(userId, exerciseId);
+    if (!winnerRow) {
+      if (existing) db.prepare('DELETE FROM personal_bests WHERE id = ?').run(existing.id);
+      return;
+    }
+    if (existing) {
+      const setClauses = Object.keys(fields).map(k => `${k} = ?`).join(', ');
+      db.prepare(`UPDATE personal_bests SET ${setClauses}, achieved_at = ?, session_id = ? WHERE id = ?`)
+        .run(...Object.values(fields), winnerRow.logged_at, winnerRow.session_id, existing.id);
+    } else {
+      const cols = Object.keys(fields);
+      db.prepare(`
+        INSERT INTO personal_bests (user_id, exercise_id, ${cols.join(', ')}, achieved_at, session_id)
+        VALUES (?, ?, ${cols.map(() => '?').join(', ')}, ?, ?)
+      `).run(userId, exerciseId, ...Object.values(fields), winnerRow.logged_at, winnerRow.session_id);
+    }
+  };
+
+  // Delete bodyweight row first so it doesn't conflict when the weighted row
+  // later tries to UPDATE its rep_count to a value that bodyweight already has
+  // (both share the unique index on (user_id, exercise_id, rep_count)).
+  syncRow("(weight_value IS NULL OR weight_value = 0) AND rep_count IS NOT NULL", bestBodyweightRow, bestBodyweightRow
+    ? { rep_count: bestBodyweightRow.actual_reps, weight_value: 0 }
+    : {});
+  syncRow('weight_value IS NOT NULL AND weight_value > 0', bestWeightRow, bestWeightRow
+    ? { weight_value: bestWeightRow.actual_weight_value, weight_unit: bestWeightRow.actual_weight_unit, rep_count: bestWeightRow.actual_reps }
+    : {});
+  syncRow('rep_count IS NULL', bestDurationRow, bestDurationRow
+    ? { duration_seconds: bestDurationRow.actual_duration_seconds }
+    : {});
 }
 
 // GET /api/workouts/user/:userId — list sessions
 router.get('/user/:userId', (req, res) => {
-  const { status, limit = 20 } = req.query;
-  const filter = status ? 'AND status = ?' : '';
-  const params = status ? [req.params.userId, status, Number(limit)] : [req.params.userId, Number(limit)];
+  const { status, limit = 20, date } = req.query;
+  const filters = ['ws.user_id = ?'];
+  const params = [req.params.userId];
+  if (status) { filters.push('ws.status = ?'); params.push(status); }
+  if (date) { filters.push("date(ws.started_at, 'localtime') = ?"); params.push(date); }
+  params.push(Number(limit));
   const sessions = db.prepare(`
-    SELECT ws.*, r.name as routine_name
+    SELECT ws.*, r.name as routine_name,
+      (SELECT COUNT(*) FROM session_exercises se WHERE se.session_id = ws.id AND se.status NOT IN ('skipped', 'pending')) as exercise_count
     FROM workout_sessions ws
     LEFT JOIN routines r ON r.id = ws.routine_id
-    WHERE ws.user_id = ? ${filter}
+    WHERE ${filters.join(' AND ')}
     ORDER BY ws.started_at DESC LIMIT ?
   `).all(...params);
   res.json(sessions);
@@ -185,7 +247,7 @@ router.post('/:id/exercises', (req, res) => {
 router.post('/session-exercises/:seId/sets', (req, res) => {
   const {
     actual_reps, actual_duration_seconds, actual_weight_value, actual_weight_unit = 'lb',
-    actual_rest_seconds, notes,
+    actual_rest_seconds, notes, is_assisted,
   } = req.body;
 
   const se = db.prepare(`
@@ -198,19 +260,16 @@ router.post('/session-exercises/:seId/sets', (req, res) => {
   const setNumber = (db.prepare('SELECT COUNT(*) as c FROM set_logs WHERE session_exercise_id = ?')
     .get(req.params.seId).c) + 1;
 
-  const isPB = checkAndUpdatePB(
-    se.user_id, se.exercise_id, se.session_id,
-    actual_reps ?? null, actual_duration_seconds ?? null,
-    actual_weight_value ?? null, actual_weight_unit
-  );
-
   const result = db.prepare(`
     INSERT INTO set_logs (session_exercise_id, set_number, actual_reps, actual_duration_seconds,
-      actual_weight_value, actual_weight_unit, is_pb, actual_rest_seconds, notes)
+      actual_weight_value, actual_weight_unit, actual_rest_seconds, notes, is_assisted)
     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
   `).run(req.params.seId, setNumber, actual_reps ?? null, actual_duration_seconds ?? null,
-         actual_weight_value ?? null, actual_weight_unit, isPB ? 1 : 0,
-         actual_rest_seconds ?? null, notes ?? null);
+         actual_weight_value ?? null, actual_weight_unit,
+         actual_rest_seconds ?? null, notes ?? null, is_assisted ? 1 : 0);
+
+  recomputePBsForExercise(se.user_id, se.exercise_id);
+  const isPB = db.prepare('SELECT is_pb FROM set_logs WHERE id = ?').get(result.lastInsertRowid).is_pb;
 
   // Mark exercise in_progress
   db.prepare(`UPDATE session_exercises SET status = 'in_progress' WHERE id = ? AND status = 'pending'`)
@@ -221,25 +280,78 @@ router.post('/session-exercises/:seId/sets', (req, res) => {
   });
 });
 
+// PATCH /api/workouts/session-exercises/:seId — update target_sets (add extra set)
+// Also resets status to in_progress so the set form re-appears.
+router.patch('/session-exercises/:seId', (req, res) => {
+  const { target_sets } = req.body;
+  if (target_sets == null) return res.status(400).json({ error: 'target_sets required' });
+  db.prepare("UPDATE session_exercises SET target_sets = ?, status = 'in_progress' WHERE id = ?")
+    .run(target_sets, req.params.seId);
+  res.json({ ok: true });
+});
+
 // PUT /api/workouts/sets/:setId — edit a logged set
 router.put('/sets/:setId', (req, res) => {
-  const { actual_reps, actual_duration_seconds, actual_weight_value, actual_weight_unit } = req.body;
+  const { actual_reps, actual_duration_seconds, actual_weight_value, actual_weight_unit, is_assisted } = req.body;
+
+  const setRow = db.prepare(`
+    SELECT sl.*, se.exercise_id, se.session_id, ws.user_id
+    FROM set_logs sl
+    JOIN session_exercises se ON se.id = sl.session_exercise_id
+    JOIN workout_sessions ws ON ws.id = se.session_id
+    WHERE sl.id = ?
+  `).get(req.params.setId);
+  if (!setRow) return res.status(404).json({ error: 'Set not found' });
+
   db.prepare(`
     UPDATE set_logs SET
       actual_reps = COALESCE(?, actual_reps),
       actual_duration_seconds = COALESCE(?, actual_duration_seconds),
       actual_weight_value = COALESCE(?, actual_weight_value),
-      actual_weight_unit = COALESCE(?, actual_weight_unit)
+      actual_weight_unit = COALESCE(?, actual_weight_unit),
+      is_assisted = COALESCE(?, is_assisted)
     WHERE id = ?
   `).run(actual_reps ?? null, actual_duration_seconds ?? null,
-         actual_weight_value ?? null, actual_weight_unit ?? null, req.params.setId);
-  res.json({ ok: true });
+         actual_weight_value ?? null, actual_weight_unit ?? null,
+         is_assisted != null ? (is_assisted ? 1 : 0) : null, req.params.setId);
+
+  // Full recompute (not incremental) so editing a set DOWN — or any other edit — can never
+  // leave a stale/orphaned PB behind; it always reflects the true current history.
+  recomputePBsForExercise(setRow.user_id, setRow.exercise_id);
+  const isPB = db.prepare('SELECT is_pb FROM set_logs WHERE id = ?').get(req.params.setId).is_pb;
+
+  res.json({ ok: true, is_pb: isPB });
 });
 
 // PUT /api/workouts/session-exercises/:seId/complete
 router.put('/session-exercises/:seId/complete', (req, res) => {
   db.prepare(`UPDATE session_exercises SET status = 'completed' WHERE id = ?`).run(req.params.seId);
   res.json({ ok: true });
+});
+
+// PUT /api/workouts/session-exercises/:seId/swap — replace exercise in place (no sets logged)
+router.put('/session-exercises/:seId/swap', (req, res) => {
+  const { exercise_id } = req.body;
+  if (!exercise_id) return res.status(400).json({ error: 'exercise_id required' });
+  const se = db.prepare('SELECT * FROM session_exercises WHERE id = ?').get(req.params.seId);
+  if (!se) return res.status(404).json({ error: 'Session exercise not found' });
+  db.prepare(`UPDATE session_exercises SET exercise_id = ?, status = 'pending' WHERE id = ?`)
+    .run(exercise_id, req.params.seId);
+  res.json(getSession(se.session_id));
+});
+
+// PUT /api/workouts/session-exercises/:seId/order — swap order with an adjacent exercise
+router.put('/session-exercises/:seId/order', (req, res) => {
+  const { swap_with_id } = req.body;
+  if (!swap_with_id) return res.status(400).json({ error: 'swap_with_id required' });
+  const a = db.prepare('SELECT * FROM session_exercises WHERE id = ?').get(req.params.seId);
+  const b = db.prepare('SELECT * FROM session_exercises WHERE id = ?').get(swap_with_id);
+  if (!a || !b) return res.status(404).json({ error: 'Session exercise not found' });
+  db.transaction(() => {
+    db.prepare('UPDATE session_exercises SET order_index = ? WHERE id = ?').run(b.order_index, a.id);
+    db.prepare('UPDATE session_exercises SET order_index = ? WHERE id = ?').run(a.order_index, b.id);
+  })();
+  res.json(getSession(a.session_id));
 });
 
 // PUT /api/workouts/:id/finish — complete a session
@@ -345,7 +457,23 @@ router.post('/log-manual', (req, res) => {
 
 // DELETE /api/workouts/:id — remove a session from history
 router.delete('/:id', (req, res) => {
-  db.prepare('DELETE FROM workout_sessions WHERE id = ?').run(req.params.id);
+  const session = db.prepare('SELECT user_id FROM workout_sessions WHERE id = ?').get(req.params.id);
+  if (!session) return res.json({ ok: true });
+  const exerciseIds = db.prepare('SELECT DISTINCT exercise_id FROM session_exercises WHERE session_id = ?')
+    .all(req.params.id).map(r => r.exercise_id);
+
+  db.transaction(() => {
+    // personal_bests.session_id has no ON DELETE behavior, so any PB row pointing at this
+    // session must be cleared first or the delete violates the FK constraint. Recomputing
+    // below rebuilds those rows correctly from whatever history remains after the delete —
+    // so a deleted session can never leave a stale/orphaned PB behind.
+    db.prepare('DELETE FROM personal_bests WHERE session_id = ?').run(req.params.id);
+    db.prepare('DELETE FROM workout_sessions WHERE id = ?').run(req.params.id);
+    for (const exerciseId of exerciseIds) {
+      recomputePBsForExercise(session.user_id, exerciseId);
+    }
+  })();
+
   res.json({ ok: true });
 });
 
@@ -354,6 +482,132 @@ router.put('/:id/abandon', (req, res) => {
   db.prepare(`UPDATE workout_sessions SET status = 'abandoned', completed_at = datetime('now') WHERE id = ?`)
     .run(req.params.id);
   res.json({ ok: true });
+});
+
+// GET /api/workouts/progress/:userId — 12-week progress data for visualizations
+router.get('/progress/:userId', (req, res) => {
+  const userId = parseInt(req.params.userId);
+  const WEEKS = 12;
+
+  // Build Monday-aligned week start dates oldest → newest
+  const now = new Date();
+  const dayOfWeek = (now.getDay() + 6) % 7; // 0 = Mon
+  const thisMonday = new Date(now);
+  thisMonday.setDate(now.getDate() - dayOfWeek);
+  thisMonday.setHours(0, 0, 0, 0);
+
+  const weekStarts = [];
+  for (let i = WEEKS - 1; i >= 0; i--) {
+    const d = new Date(thisMonday);
+    d.setDate(d.getDate() - i * 7);
+    weekStarts.push(d.toISOString().slice(0, 10));
+  }
+  const rangeStart = weekStarts[0];
+
+  function getWeekIdx(dateStr) {
+    for (let i = weekStarts.length - 1; i >= 0; i--) {
+      if (dateStr >= weekStarts[i]) return i;
+    }
+    return -1;
+  }
+
+  const rows = db.prepare(`
+    SELECT
+      sl.actual_weight_value, sl.actual_weight_unit,
+      sl.actual_reps, sl.is_pb,
+      substr(sl.logged_at, 1, 10) as log_date,
+      se.exercise_id,
+      e.name as exercise_name,
+      e.primary_muscles,
+      e.category
+    FROM set_logs sl
+    JOIN session_exercises se ON sl.session_exercise_id = se.id
+    JOIN workout_sessions ws ON se.session_id = ws.id
+    JOIN exercises e ON se.exercise_id = e.id
+    WHERE ws.user_id = ?
+      AND ws.status = 'completed'
+      AND sl.logged_at >= ?
+      AND e.category IN ('strength', 'hypertrophy')
+    ORDER BY sl.logged_at ASC
+  `).all(userId, rangeStart);
+
+  const MUSCLE_KEYS = ['chest','shoulders','biceps','triceps','upper_back','lats',
+                       'lower_back','core','quads','hamstrings','glutes','calves'];
+  const muscleWeeklyVolume = {};
+  MUSCLE_KEYS.forEach(k => { muscleWeeklyVolume[k] = new Array(WEEKS).fill(0); });
+
+  const exerciseHistoryMap = {};
+
+  const MOVEMENT_MUSCLES = {
+    push:  ['chest','shoulders','triceps'],
+    pull:  ['lats','upper_back','biceps','rear_delts','forearms'],
+    hinge: ['glutes','hamstrings','lower_back'],
+    squat: ['quads','hip_flexor'],
+    core:  ['core'],
+  };
+  const movementPattern = { push: 0, pull: 0, hinge: 0, squat: 0, core: 0 };
+  const fourWeeksStart = weekStarts[Math.max(0, WEEKS - 4)];
+
+  for (const row of rows) {
+    const wi = getWeekIdx(row.log_date);
+    if (wi < 0) continue;
+    const muscles = JSON.parse(row.primary_muscles || '[]');
+
+    muscles.forEach(m => {
+      if (muscleWeeklyVolume[m] !== undefined) muscleWeeklyVolume[m][wi]++;
+    });
+
+    if (row.log_date >= fourWeeksStart) {
+      for (const [pattern, patMuscles] of Object.entries(MOVEMENT_MUSCLES)) {
+        if (muscles.some(m => patMuscles.includes(m))) {
+          movementPattern[pattern]++;
+          break;
+        }
+      }
+    }
+
+    if (row.actual_weight_value > 0 && row.actual_reps > 0) {
+      const e1rm = Math.round(row.actual_weight_value * (1 + row.actual_reps / 30) * 10) / 10;
+      const exId = row.exercise_id;
+      if (!exerciseHistoryMap[exId]) {
+        exerciseHistoryMap[exId] = {
+          exercise_id: exId,
+          exercise_name: row.exercise_name,
+          primary_muscles: muscles,
+          sessions: {},
+        };
+      }
+      const sess = exerciseHistoryMap[exId].sessions;
+      if (!sess[row.log_date] || e1rm > sess[row.log_date].e1rm) {
+        sess[row.log_date] = {
+          date: row.log_date,
+          e1rm,
+          weight: row.actual_weight_value,
+          weight_unit: row.actual_weight_unit || 'lb',
+          reps: row.actual_reps,
+          is_pb: row.is_pb === 1,
+        };
+      } else if (row.is_pb === 1) {
+        sess[row.log_date].is_pb = true;
+      }
+    }
+  }
+
+  const exerciseStrength = Object.values(exerciseHistoryMap)
+    .map(ex => {
+      const { sessions, ...rest } = ex;
+      return { ...rest, history: Object.values(sessions).sort((a, b) => a.date.localeCompare(b.date)) };
+    })
+    .filter(ex => ex.history.length >= 2)
+    .sort((a, b) => {
+      const aLast = a.history.at(-1).date;
+      const bLast = b.history.at(-1).date;
+      if (bLast !== aLast) return bLast.localeCompare(aLast);
+      return b.history.length - a.history.length;
+    })
+    .slice(0, 8);
+
+  res.json({ muscleWeeklyVolume, exerciseStrength, movementPattern, weekStarts });
 });
 
 // GET /api/workouts/user/:userId/pbs — personal bests for a user

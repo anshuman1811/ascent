@@ -94,7 +94,7 @@ router.get('/:id/history', (req, res) => {
   if (lastSession) {
     last_sets = db.prepare(`
       SELECT sl.set_number, sl.actual_reps, sl.actual_duration_seconds,
-             sl.actual_weight_value, sl.actual_weight_unit, sl.is_pb
+             sl.actual_weight_value, sl.actual_weight_unit, sl.is_pb, sl.is_assisted
       FROM set_logs sl
       JOIN session_exercises se ON se.id = sl.session_exercise_id
       WHERE se.session_id = ? AND se.exercise_id = ?

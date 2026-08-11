@@ -4,6 +4,16 @@ const router = express.Router();
 
 function r(v) { return Math.round((v || 0) * 10) / 10; }
 
+// Normalize any timestamp string to SQLite UTC format "YYYY-MM-DD HH:MM:SS".
+// Handles naive "YYYY-MM-DDThh:mm:ss" (treated as server local time by JS),
+// ISO "YYYY-MM-DDThh:mm:ssZ", and already-correct "YYYY-MM-DD HH:MM:SS" UTC strings.
+function toUtcSqlite(ts) {
+  if (!ts) return null;
+  const d = new Date(ts);
+  if (isNaN(d.getTime())) return null;
+  return d.toISOString().replace('T', ' ').replace(/\.\d{3}Z$/, '');
+}
+
 function computeItemMacros(food, quantity) {
   const scale = quantity / food.serving_size;
   return {
@@ -54,7 +64,7 @@ function getMealWithItems(mealId) {
 // GET /api/meals/user/:userId?date=YYYY-MM-DD
 router.get('/user/:userId', (req, res) => {
   const { date } = req.query;
-  const where = date ? `AND date(m.logged_at) = ?` : '';
+  const where = date ? `AND date(m.logged_at, 'localtime') = ?` : '';
   const params = date ? [req.params.userId, date] : [req.params.userId];
 
   const meals = db.prepare(`
@@ -74,8 +84,8 @@ router.post('/', (req, res) => {
 
   const result = db.prepare(`
     INSERT INTO meals (user_id, meal_type, notes, logged_at)
-    VALUES (?, ?, ?, COALESCE(?, datetime('now', 'localtime')))
-  `).run(user_id, meal_type, notes ?? null, logged_at ?? null);
+    VALUES (?, ?, ?, COALESCE(?, datetime('now')))
+  `).run(user_id, meal_type, notes ?? null, toUtcSqlite(logged_at));
 
   res.status(201).json(getMealWithItems(result.lastInsertRowid));
 });
@@ -89,7 +99,7 @@ router.put('/:id', (req, res) => {
       notes = COALESCE(?, notes),
       logged_at = COALESCE(?, logged_at)
     WHERE id = ?
-  `).run(meal_type ?? null, notes ?? null, logged_at ?? null, req.params.id);
+  `).run(meal_type ?? null, notes ?? null, toUtcSqlite(logged_at), req.params.id);
   res.json(getMealWithItems(req.params.id));
 });
 
@@ -184,6 +194,9 @@ router.delete('/items/:itemId', (req, res) => {
 // GET /api/meals/user/:userId/recent-items?limit=30
 // Returns the most recently logged food items (distinct food_id, latest quantity/unit)
 // with the meal date and type for context — used for the "quick re-log from recent" feature.
+// Includes both users' logs (not just the requesting user's) since household members
+// often eat the same things; each food_id keeps only its single most-recent occurrence
+// across everyone, tagged with who logged it so the UI can show "via Aastha" etc.
 router.get('/user/:userId/recent-items', (req, res) => {
   const { limit = 30 } = req.query;
   const rows = db.prepare(`
@@ -202,25 +215,27 @@ router.get('/user/:userId/recent-items', (req, res) => {
       f.serving_unit,
       f.calories as food_calories_per_serving,
       m.meal_type,
-      date(m.logged_at) as meal_date,
-      m.logged_at
+      date(m.logged_at, 'localtime') as meal_date,
+      m.logged_at,
+      m.user_id as logged_by_user_id,
+      u.name as logged_by_name
     FROM meal_items mi
     JOIN meals m ON m.id = mi.meal_id
     JOIN foods f ON f.id = mi.food_id
-    WHERE m.user_id = ?
+    JOIN users u ON u.id = m.user_id
     ORDER BY m.logged_at DESC
     LIMIT ?
-  `).all(req.params.userId, Number(limit));
+  `).all(Number(limit) * 3); // overfetch since dedup happens across both users below
 
-  // Deduplicate: keep only the most recent entry per food_id
+  // Deduplicate: keep only the most recent entry per food_id (across all users)
   const seen = new Set();
   const deduped = rows.filter(r => {
     if (seen.has(r.food_id)) return false;
     seen.add(r.food_id);
     return true;
-  });
+  }).slice(0, Number(limit));
 
-  res.json(deduped);
+  res.json(deduped.map(r => ({ ...r, is_mine: r.logged_by_user_id === Number(req.params.userId) })));
 });
 
 module.exports = router;

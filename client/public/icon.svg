@@ -1,0 +1,8 @@
+<svg viewBox="0 0 32 32" xmlns="http://www.w3.org/2000/svg">
+  <!-- Bottom chevron — darkest, widest -->
+  <polyline points="4,28 16,20 28,28" fill="none" stroke="#4338ca" stroke-width="3" stroke-linecap="round" stroke-linejoin="round" stroke-opacity="0.45"/>
+  <!-- Middle chevron -->
+  <polyline points="6,20 16,12 26,20" fill="none" stroke="#6366f1" stroke-width="3" stroke-linecap="round" stroke-linejoin="round" stroke-opacity="0.72"/>
+  <!-- Top chevron — brightest, narrowest -->
+  <polyline points="8,12 16,4 24,12" fill="none" stroke="#c4b5fd" stroke-width="3" stroke-linecap="round" stroke-linejoin="round"/>
+</svg>

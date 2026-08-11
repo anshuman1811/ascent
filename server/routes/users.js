@@ -17,7 +17,7 @@ const USER_PROFILE_SELECT = `
     p.sodium_target_mg, p.added_sugar_target_g, p.saturated_fat_target_g,
     p.cholesterol_target_mg, p.potassium_target_mg, p.tracked_macros,
     p.weight_goal_type, p.target_weight_value, p.target_weight_unit,
-    p.weight_unit, p.volume_unit, p.length_unit
+    p.weight_unit, p.volume_unit, p.length_unit, p.active_regime_id
   FROM users u
   LEFT JOIN user_profiles p ON p.user_id = u.id
 `;
@@ -53,6 +53,10 @@ router.put('/:id/profile', (req, res) => {
     tracked_macros, weight_goal_type, target_weight_value,
     target_weight_unit, weight_unit, volume_unit, length_unit
   } = req.body;
+  // active_regime_id is nullable-by-design (unsetting the active regime is a valid action),
+  // so it's handled separately from the COALESCE pattern below which can't distinguish
+  // "not provided" from "explicitly cleared".
+  const hasActiveRegime = Object.prototype.hasOwnProperty.call(req.body, 'active_regime_id');
 
   // Accept tracked_macros as an array (from client) or a JSON string; store as JSON string
   const trackedMacrosStr = tracked_macros != null
@@ -99,6 +103,11 @@ router.put('/:id/profile', (req, res) => {
     target_weight_unit ?? null, weight_unit ?? null, volume_unit ?? null,
     length_unit ?? null, req.params.id
   );
+
+  if (hasActiveRegime) {
+    db.prepare('UPDATE user_profiles SET active_regime_id = ? WHERE user_id = ?')
+      .run(req.body.active_regime_id ?? null, req.params.id);
+  }
   res.json({ ok: true });
 });
 

@@ -6,7 +6,7 @@ function getRoutineWithExercises(routineId) {
   const routine = db.prepare('SELECT * FROM routines WHERE id = ?').get(routineId);
   if (!routine) return null;
   const exercises = db.prepare(`
-    SELECT re.*, e.name as exercise_name, e.exercise_type,
+    SELECT re.*, e.name as exercise_name, e.exercise_type, e.category,
       e.primary_muscles, e.secondary_muscles, e.met_value,
       e.description, e.notes as exercise_notes, e.gif_url
     FROM routine_exercises re
@@ -20,6 +20,16 @@ function getRoutineWithExercises(routineId) {
   }));
   return { ...routine, exercises };
 }
+
+// GET /api/routines — all routines regardless of owner, for the shared Library view
+router.get('/', (req, res) => {
+  const routines = db.prepare(`
+    SELECT r.id, u.name as owner_name FROM routines r
+    JOIN users u ON u.id = r.user_id
+    ORDER BY r.name ASC
+  `).all();
+  res.json(routines.map(r => ({ ...getRoutineWithExercises(r.id), owner_name: r.owner_name })));
+});
 
 // GET /api/routines/user/:userId
 router.get('/user/:userId', (req, res) => {
@@ -98,6 +108,25 @@ router.put('/exercises/:reId', (req, res) => {
          weight_value ?? null, weight_unit ?? null, rest_seconds ?? null,
          order_index ?? null, req.params.reId);
   res.json({ ok: true });
+});
+
+// PUT /api/routines/exercises/:reId/swap — replace the exercise on this slot, resetting sets/reps/rest to the given values
+router.put('/exercises/:reId/swap', (req, res) => {
+  const { exercise_id, sets, reps, duration_seconds, weight_value, weight_unit, rest_seconds } = req.body;
+  if (!exercise_id) return res.status(400).json({ error: 'exercise_id is required' });
+
+  const re = db.prepare('SELECT routine_id FROM routine_exercises WHERE id = ?').get(req.params.reId);
+  if (!re) return res.status(404).json({ error: 'Routine exercise not found' });
+
+  db.prepare(`
+    UPDATE routine_exercises SET
+      exercise_id = ?, sets = ?, reps = ?, duration_seconds = ?,
+      weight_value = ?, weight_unit = ?, rest_seconds = ?
+    WHERE id = ?
+  `).run(exercise_id, sets ?? 3, reps ?? null, duration_seconds ?? null,
+         weight_value ?? null, weight_unit ?? 'lb', rest_seconds ?? 90, req.params.reId);
+
+  res.json(getRoutineWithExercises(re.routine_id));
 });
 
 // DELETE /api/routines/exercises/:reId

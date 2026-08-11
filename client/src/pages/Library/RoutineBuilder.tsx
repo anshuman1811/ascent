@@ -1,10 +1,10 @@
 import { useState, useMemo } from 'react';
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query';
 import { useOutletContext } from 'react-router-dom';
-import { Plus, Trash2, GripVertical, Timer, BarChart2, ChevronDown, ChevronUp, Search, X } from 'lucide-react';
+import { Plus, Trash2, Timer, BarChart2, ChevronDown, ChevronUp, Search, X, Repeat, Pencil, Check } from 'lucide-react';
 import { api } from '../../api/client';
 import { useAppStore } from '../../store/appStore';
-import type { Routine, Exercise } from '../../types';
+import type { Routine, RoutineExercise, Exercise } from '../../types';
 import Button from '../../components/ui/Button';
 import Input from '../../components/ui/Input';
 import Select from '../../components/ui/Select';
@@ -33,13 +33,17 @@ export default function RoutineBuilder({ userId: propUserId }: { userId?: number
   const [expanded, setExpanded] = useState<Set<number>>(new Set());
   const [expandedEx, setExpandedEx] = useState<Set<number>>(new Set());
   const [addExerciseTo, setAddExerciseTo] = useState<number | null>(null);
+  const [swapTarget, setSwapTarget] = useState<RoutineExercise | null>(null);
   const [confirmDeleteId, setConfirmDeleteId] = useState<number | null>(null);
   const [confirmDeleteReId, setConfirmDeleteReId] = useState<number | null>(null);
+  const [editingReId, setEditingReId] = useState<number | null>(null);
+  const [editForm, setEditForm] = useState({ sets: 3, reps: 8, duration_seconds: 30, weight_value: '', weight_unit: 'lb', rest_seconds: 90 });
 
+  // Library is a shared view — show every routine regardless of who owns it,
+  // not just the currently active user's (ownership still gates "Start Workout" pickers).
   const { data: routines = [] } = useQuery({
-    queryKey: ['routines', userId],
-    queryFn: () => api.get<Routine[]>(`/routines/user/${userId}`),
-    enabled: !!userId,
+    queryKey: ['routines', 'all'],
+    queryFn: () => api.get<Routine[]>('/routines'),
   });
 
   const { data: exercises = [] } = useQuery({
@@ -50,7 +54,7 @@ export default function RoutineBuilder({ userId: propUserId }: { userId?: number
   const createRoutine = useMutation({
     mutationFn: (name: string) => api.post('/routines', { user_id: userId, name }),
     onSuccess: (r: any) => {
-      qc.invalidateQueries({ queryKey: ['routines', userId] });
+      qc.invalidateQueries({ queryKey: ['routines', 'all'] });
       setShowAdd(false);
       setExpanded(prev => new Set([...prev, r.id]));
     },
@@ -58,12 +62,27 @@ export default function RoutineBuilder({ userId: propUserId }: { userId?: number
 
   const deleteRoutine = useMutation({
     mutationFn: (id: number) => api.delete(`/routines/${id}`),
-    onSuccess: () => qc.invalidateQueries({ queryKey: ['routines', userId] }),
+    onSuccess: () => qc.invalidateQueries({ queryKey: ['routines', 'all'] }),
   });
 
   const deleteRoutineEx = useMutation({
     mutationFn: (reId: number) => api.delete(`/routines/exercises/${reId}`),
-    onSuccess: () => qc.invalidateQueries({ queryKey: ['routines', userId] }),
+    onSuccess: () => qc.invalidateQueries({ queryKey: ['routines', 'all'] }),
+  });
+
+  const updateRoutineEx = useMutation({
+    mutationFn: ({ reId, data }: { reId: number; data: Record<string, any> }) =>
+      api.put(`/routines/exercises/${reId}`, data),
+    onSuccess: () => { qc.invalidateQueries({ queryKey: ['routines', 'all'] }); setEditingReId(null); },
+  });
+
+  const reorderRoutineEx = useMutation({
+    mutationFn: ({ reId, orderIndex, swapId, swapOrderIndex }: { reId: number; orderIndex: number; swapId: number; swapOrderIndex: number }) =>
+      Promise.all([
+        api.put(`/routines/exercises/${reId}`, { order_index: swapOrderIndex }),
+        api.put(`/routines/exercises/${swapId}`, { order_index: orderIndex }),
+      ]),
+    onSuccess: () => qc.invalidateQueries({ queryKey: ['routines', 'all'] }),
   });
 
   const toggle = (id: number) => setExpanded(prev => {
@@ -99,7 +118,14 @@ export default function RoutineBuilder({ userId: propUserId }: { userId?: number
         <div key={routine.id} className="bg-gray-900 rounded-2xl border border-gray-800 overflow-hidden">
           <div className="w-full flex items-center justify-between p-4">
             <button onClick={() => toggle(routine.id)} className="flex-1 text-left min-w-0 mr-2">
-              <p className="text-sm font-semibold text-white">{routine.name}</p>
+              <div className="flex items-center gap-1.5">
+                <p className="text-sm font-semibold text-white truncate">{routine.name}</p>
+                {routine.owner_name && (
+                  <span className="text-[10px] px-1.5 py-0.5 rounded-full bg-gray-800 text-gray-400 shrink-0">
+                    {routine.owner_name}
+                  </span>
+                )}
+              </div>
               <p className="text-xs text-gray-500">{routine.exercises.length} exercise{routine.exercises.length !== 1 ? 's' : ''}</p>
             </button>
             <div className="flex items-center gap-2 shrink-0">
@@ -130,12 +156,52 @@ export default function RoutineBuilder({ userId: propUserId }: { userId?: number
           {expanded.has(routine.id) && (() => {
             const { pc, sc } = buildMuscleCounts(routine);
             const hasAnyMuscle = Object.keys(pc).length > 0 || Object.keys(sc).length > 0;
+            const sorted = [...routine.exercises].sort((a, b) => a.order_index - b.order_index);
+            const zoneOf = (cat: string) => cat === 'warmup' ? 'warmup' : cat === 'cooldown' ? 'cooldown' : 'workout';
+            const ZONE_META: Record<string, { label: string; color: string; bg: string }> = {
+              warmup:  { label: 'Warm-Up',  color: 'text-amber-400',  bg: 'bg-amber-950/30 border-amber-900/40' },
+              workout: { label: 'Workout',  color: 'text-indigo-400', bg: 'bg-indigo-950/20 border-indigo-900/30' },
+              cooldown:{ label: 'Cool-Down',color: 'text-cyan-400',   bg: 'bg-cyan-950/30 border-cyan-900/40' },
+            };
+            let lastZone = '';
             return (
               <div className="border-t border-gray-800">
-                {routine.exercises.map((re, idx) => (
-                  <div key={re.id} className="border-b border-gray-800/50 last:border-0">
+                {sorted.map((re, idx) => {
+                  const zone = zoneOf(re.category ?? 'strength');
+                  const showHeader = zone !== lastZone;
+                  lastZone = zone;
+                  const zm = ZONE_META[zone];
+                  return (
+                  <div key={re.id}>
+                    {showHeader && (
+                      <div className={`flex items-center gap-2 px-4 py-1.5 border-b border-t ${zm.bg} ${idx > 0 ? 'border-t' : ''}`}>
+                        <span className={`text-[10px] font-bold uppercase tracking-widest ${zm.color}`}>{zm.label}</span>
+                      </div>
+                    )}
+                    <div className="border-b border-gray-800/50 last:border-0">
                     <div className="flex items-center gap-3 px-4 py-3">
-                      <GripVertical size={14} className="text-gray-700 shrink-0" />
+                      <div className="flex flex-col shrink-0">
+                        <button
+                          disabled={idx === 0 || reorderRoutineEx.isPending}
+                          onClick={() => {
+                            const prev = sorted[idx - 1];
+                            reorderRoutineEx.mutate({ reId: re.id, orderIndex: re.order_index, swapId: prev.id, swapOrderIndex: prev.order_index });
+                          }}
+                          className="p-0.5 text-gray-700 hover:text-gray-300 disabled:opacity-20 disabled:cursor-not-allowed transition-colors"
+                        >
+                          <ChevronUp size={12} />
+                        </button>
+                        <button
+                          disabled={idx === sorted.length - 1 || reorderRoutineEx.isPending}
+                          onClick={() => {
+                            const next = sorted[idx + 1];
+                            reorderRoutineEx.mutate({ reId: re.id, orderIndex: re.order_index, swapId: next.id, swapOrderIndex: next.order_index });
+                          }}
+                          className="p-0.5 text-gray-700 hover:text-gray-300 disabled:opacity-20 disabled:cursor-not-allowed transition-colors"
+                        >
+                          <ChevronDown size={12} />
+                        </button>
+                      </div>
                       <div className="flex-1 min-w-0">
                         <div className="flex items-center gap-2">
                           <span className="text-xs text-gray-600 w-4">{idx + 1}.</span>
@@ -144,16 +210,68 @@ export default function RoutineBuilder({ userId: propUserId }: { userId?: number
                             ? <Timer size={11} className="text-purple-400 shrink-0" />
                             : <BarChart2 size={11} className="text-blue-400 shrink-0" />}
                         </div>
-                        <p className="text-xs text-gray-500 ml-5">
-                          {re.sets} sets ·{' '}
-                          {re.exercise_type === 'timed'
-                            ? `${re.duration_seconds}s`
-                            : `${re.reps} reps`}
-                          {re.weight_value ? ` @ ${re.weight_value} ${re.weight_unit}` : ''}
-                          {' · '}{re.rest_seconds}s rest
-                        </p>
+                        {editingReId === re.id ? (
+                          <div className="mt-2 ml-5 space-y-2">
+                            <div className="grid grid-cols-3 gap-1.5">
+                              <Input label="Sets" type="number" value={editForm.sets}
+                                onChange={e => setEditForm(f => ({ ...f, sets: parseInt(e.target.value) || 1 }))} />
+                              {re.exercise_type === 'timed' ? (
+                                <Input label="Secs" type="number" value={editForm.duration_seconds}
+                                  onChange={e => setEditForm(f => ({ ...f, duration_seconds: parseInt(e.target.value) || 30 }))} />
+                              ) : (
+                                <Input label="Reps" type="number" value={editForm.reps}
+                                  onChange={e => setEditForm(f => ({ ...f, reps: parseInt(e.target.value) || 1 }))} />
+                              )}
+                              <Input label="Rest (s)" type="number" value={editForm.rest_seconds}
+                                onChange={e => setEditForm(f => ({ ...f, rest_seconds: parseInt(e.target.value) || 0 }))} />
+                            </div>
+                            {re.exercise_type === 'reps' && (
+                              <div className="grid grid-cols-2 gap-1.5">
+                                <Input label="Weight" type="number" value={editForm.weight_value}
+                                  onChange={e => setEditForm(f => ({ ...f, weight_value: e.target.value }))} />
+                                <Select label="Unit" value={editForm.weight_unit}
+                                  onChange={e => setEditForm(f => ({ ...f, weight_unit: e.target.value }))}
+                                  options={[{ value: 'lb', label: 'lb' }, { value: 'kg', label: 'kg' }]} />
+                              </div>
+                            )}
+                            <div className="flex gap-2">
+                              <Button size="sm" variant="secondary" onClick={() => setEditingReId(null)} className="flex-1">Cancel</Button>
+                              <Button size="sm" onClick={() => updateRoutineEx.mutate({ reId: re.id, data: {
+                                sets: editForm.sets,
+                                reps: re.exercise_type === 'reps' ? editForm.reps : undefined,
+                                duration_seconds: re.exercise_type === 'timed' ? editForm.duration_seconds : undefined,
+                                weight_value: editForm.weight_value ? parseFloat(editForm.weight_value) : null,
+                                weight_unit: editForm.weight_unit,
+                                rest_seconds: editForm.rest_seconds,
+                              }})} disabled={updateRoutineEx.isPending} className="flex-1">
+                                <Check size={12} /> Save
+                              </Button>
+                            </div>
+                          </div>
+                        ) : (
+                          <p className="text-xs text-gray-500 ml-5">
+                            {re.sets} sets ·{' '}
+                            {re.exercise_type === 'timed'
+                              ? `${re.duration_seconds}s`
+                              : `${re.reps} reps`}
+                            {re.weight_value ? ` @ ${re.weight_value} ${re.weight_unit}` : ''}
+                            {' · '}{re.rest_seconds}s rest
+                          </p>
+                        )}
                       </div>
                       <div className="flex items-center gap-1 shrink-0">
+                        {editingReId !== re.id && (
+                          <button onClick={() => {
+                            setEditingReId(re.id);
+                            setEditForm({ sets: re.sets, reps: re.reps ?? 8, duration_seconds: re.duration_seconds ?? 30, weight_value: re.weight_value ? String(re.weight_value) : '', weight_unit: re.weight_unit ?? 'lb', rest_seconds: re.rest_seconds });
+                          }} className="p-1.5 rounded-lg hover:bg-gray-800 text-gray-600 hover:text-indigo-400 transition-colors">
+                            <Pencil size={13} />
+                          </button>
+                        )}
+                        <button onClick={() => setSwapTarget(re)}
+                          className="p-1.5 rounded-lg hover:bg-gray-800 text-gray-600 hover:text-indigo-400 transition-colors">
+                          <Repeat size={13} />
+                        </button>
                         {confirmDeleteReId === re.id ? (
                           <>
                             <button onClick={() => { deleteRoutineEx.mutate(re.id); setConfirmDeleteReId(null); }}
@@ -218,7 +336,9 @@ export default function RoutineBuilder({ userId: propUserId }: { userId?: number
                       </div>
                     )}
                   </div>
-                ))}
+                  </div>
+                );
+                })}
 
                 {hasAnyMuscle && (
                   <div className="px-4 py-4 border-b border-gray-800/50">
@@ -253,7 +373,18 @@ export default function RoutineBuilder({ userId: propUserId }: { userId?: number
           routineId={addExerciseTo}
           exercises={exercises}
           onClose={() => setAddExerciseTo(null)}
-          onAdded={() => { qc.invalidateQueries({ queryKey: ['routines', userId] }); setAddExerciseTo(null); }}
+          onAdded={() => { qc.invalidateQueries({ queryKey: ['routines', 'all'] }); setAddExerciseTo(null); }}
+        />
+      )}
+
+      {/* Swap exercise modal */}
+      {swapTarget && (
+        <SwapExerciseModal
+          open
+          current={swapTarget}
+          exercises={exercises}
+          onClose={() => setSwapTarget(null)}
+          onSwapped={() => { qc.invalidateQueries({ queryKey: ['routines', 'all'] }); setSwapTarget(null); }}
         />
       )}
     </div>
@@ -449,6 +580,122 @@ function AddExerciseToRoutineModal({ open, routineId, exercises, onClose, onAdde
           <Button variant="secondary" onClick={onClose} className="flex-1">Cancel</Button>
           <Button onClick={() => add.mutate()} disabled={!selectedExId || showCreate || add.isPending} className="flex-1">
             {add.isPending ? 'Adding…' : 'Add Exercise'}
+          </Button>
+        </div>
+      </div>
+    </Modal>
+  );
+}
+
+function SwapExerciseModal({ open, current, exercises, onClose, onSwapped }: {
+  open: boolean; current: RoutineExercise; exercises: Exercise[];
+  onClose: () => void; onSwapped: () => void;
+}) {
+  const [search, setSearch] = useState('');
+  const [selectedExId, setSelectedExId] = useState<number | null>(null);
+  const [form, setForm] = useState({
+    sets: current.sets,
+    reps: current.reps ?? 8,
+    duration_seconds: current.duration_seconds ?? 30,
+    weight_value: current.weight_value != null ? String(current.weight_value) : '',
+    weight_unit: current.weight_unit || 'lb',
+    rest_seconds: current.rest_seconds,
+  });
+
+  const filtered = useMemo(() => {
+    const q = search.trim().toLowerCase();
+    const others = exercises.filter(e => e.id !== current.exercise_id);
+    return q ? others.filter(e => e.name.toLowerCase().includes(q)) : others;
+  }, [exercises, search, current.exercise_id]);
+
+  const selectedEx = exercises.find(e => e.id === selectedExId);
+
+  const swap = useMutation({
+    mutationFn: () => api.put(`/routines/exercises/${current.id}/swap`, {
+      exercise_id: selectedExId,
+      sets: form.sets,
+      reps: selectedEx?.exercise_type === 'reps' ? form.reps : undefined,
+      duration_seconds: selectedEx?.exercise_type === 'timed' ? form.duration_seconds : undefined,
+      weight_value: form.weight_value ? parseFloat(form.weight_value) : undefined,
+      weight_unit: form.weight_unit,
+      rest_seconds: form.rest_seconds,
+    }),
+    onSuccess: onSwapped,
+  });
+
+  return (
+    <Modal open={open} onClose={onClose} title={`Swap "${current.exercise_name}"`} size="md">
+      <div className="space-y-3">
+        <div>
+          <p className="text-xs font-medium text-gray-400 mb-1.5">Replace with</p>
+          <div className="relative mb-2">
+            <Search size={13} className="absolute left-2.5 top-1/2 -translate-y-1/2 text-gray-500 pointer-events-none" />
+            <input
+              value={search}
+              onChange={e => setSearch(e.target.value)}
+              placeholder="Search exercises…"
+              className="w-full bg-gray-800 border border-gray-700 rounded-lg pl-7 pr-8 py-2 text-sm text-white placeholder-gray-500 focus:outline-none focus:border-indigo-500"
+              autoFocus
+            />
+            {search && (
+              <button onClick={() => setSearch('')} className="absolute right-2 top-1/2 -translate-y-1/2 text-gray-500 hover:text-white">
+                <X size={13} />
+              </button>
+            )}
+          </div>
+
+          <div className="max-h-36 overflow-y-auto rounded-lg border border-gray-800 bg-gray-900 hide-scrollbar">
+            {filtered.length === 0 ? (
+              <p className="text-xs text-gray-500 text-center py-3">No exercises found</p>
+            ) : (
+              filtered.map(ex => (
+                <button
+                  key={ex.id}
+                  onClick={() => setSelectedExId(ex.id)}
+                  className={`w-full flex items-center justify-between px-3 py-2 text-left text-sm transition-colors border-b border-gray-800 last:border-0 ${
+                    selectedExId === ex.id
+                      ? 'bg-indigo-600/20 text-indigo-300'
+                      : 'text-gray-300 hover:bg-gray-800'
+                  }`}
+                >
+                  <span className="truncate">{ex.name}</span>
+                  <span className="ml-2 shrink-0 text-[10px] text-gray-500">
+                    {ex.exercise_type === 'timed' ? 'timed' : 'reps'}
+                  </span>
+                </button>
+              ))
+            )}
+          </div>
+        </div>
+
+        {selectedEx && (
+          <>
+            <div className="pt-1 border-t border-gray-800">
+              <p className="text-xs text-gray-500 mb-2">
+                New: <span className="text-white font-medium">{selectedEx.name}</span>
+                <span className="ml-1 text-gray-600">({selectedEx.exercise_type})</span>
+              </p>
+            </div>
+            <div className="grid grid-cols-2 gap-2">
+              <Input label="Sets" type="number" value={form.sets} onChange={e => setForm(f => ({ ...f, sets: parseInt(e.target.value) || 3 }))} />
+              {selectedEx.exercise_type === 'timed'
+                ? <Input label="Duration (s)" type="number" value={form.duration_seconds} onChange={e => setForm(f => ({ ...f, duration_seconds: parseInt(e.target.value) || 30 }))} />
+                : <Input label="Reps" type="number" value={form.reps} onChange={e => setForm(f => ({ ...f, reps: parseInt(e.target.value) || 8 }))} />}
+            </div>
+            <div className="grid grid-cols-2 gap-2">
+              <Input label="Weight (optional)" type="number" value={form.weight_value} onChange={e => setForm(f => ({ ...f, weight_value: e.target.value }))} placeholder="0" />
+              <Select label="Unit" value={form.weight_unit} onChange={e => setForm(f => ({ ...f, weight_unit: e.target.value }))}
+                options={[{ value: 'lb', label: 'lb' }, { value: 'kg', label: 'kg' }]} />
+            </div>
+            <Input label="Rest (seconds)" type="number" value={form.rest_seconds} onChange={e => setForm(f => ({ ...f, rest_seconds: parseInt(e.target.value) || 90 }))}
+              onKeyDown={e => { if (e.key === 'Enter' && selectedExId && !swap.isPending) swap.mutate(); }} />
+          </>
+        )}
+
+        <div className="flex gap-2 pt-1">
+          <Button variant="secondary" onClick={onClose} className="flex-1">Cancel</Button>
+          <Button onClick={() => swap.mutate()} disabled={!selectedExId || swap.isPending} className="flex-1">
+            {swap.isPending ? 'Swapping…' : 'Swap Exercise'}
           </Button>
         </div>
       </div>

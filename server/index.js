@@ -1,3 +1,5 @@
+require('dotenv').config({ path: require('path').join(__dirname, '.env') });
+
 const express = require('express');
 const cors = require('cors');
 const path = require('path');
@@ -17,9 +19,12 @@ app.use('/api/foods',     require('./routes/foods'));
 app.use('/api/meals',     require('./routes/meals'));
 app.use('/api/exercises', require('./routes/exercises'));
 app.use('/api/routines',  require('./routes/routines'));
+app.use('/api/regimes',   require('./routes/regimes'));
 app.use('/api/workouts',  require('./routes/workouts'));
 app.use('/api/dashboard', require('./routes/dashboard'));
 app.use('/api/images',    require('./routes/images'));
+app.use('/api/ai',        require('./routes/ai'));
+app.use('/api/bug-reports', require('./routes/bug-reports'));
 
 // Serve uploaded images
 const uploadsDir = path.join(__dirname, '../data/uploads');

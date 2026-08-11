@@ -202,32 +202,42 @@ export default function MuscleMap({
 export function MuscleMapLegend({ mode }: { mode: 'exercise' | 'routine' }) {
   if (mode === 'exercise') {
     return (
-      <div className="flex gap-3 justify-center">
+      <div className="flex gap-3 justify-center flex-wrap">
         {([
           { color: INTENSITY_COLORS[7], label: 'Primary' },
           { color: INTENSITY_COLORS[3], label: 'Secondary' },
           { color: '#293548',           label: 'Inactive'  },
         ] as const).map(({ color, label }) => (
           <div key={label} className="flex items-center gap-1.5">
-            <div className="w-2.5 h-2.5 rounded-full" style={{ background: color }} />
-            <span className="text-[10px] text-gray-500">{label}</span>
+            <div className="w-2.5 h-2.5 rounded-full shrink-0" style={{ background: color }} />
+            <span className="text-[10px] text-gray-500 whitespace-nowrap">{label}</span>
           </div>
         ))}
       </div>
     );
   }
+  // Two deliberate rows instead of one flex-wrap row — wrapping at an
+  // unpredictable container width left the leftover item floating under
+  // whatever happened to be above it, looking misaligned.
+  const ROW1 = [
+    { color: INTENSITY_COLORS[10], label: '3+ exercises' },
+    { color: INTENSITY_COLORS[8],  label: '2 exercises'  },
+    { color: INTENSITY_COLORS[7],  label: '1 exercise'   },
+  ] as const;
+  const ROW2 = [
+    { color: INTENSITY_COLORS[3], label: 'Secondary'    },
+    { color: '#293548',           label: 'Not targeted' },
+  ] as const;
   return (
-    <div className="flex gap-3 justify-center flex-wrap">
-      {([
-        { color: INTENSITY_COLORS[10], label: '3+ exercises' },
-        { color: INTENSITY_COLORS[8],  label: '2 exercises'  },
-        { color: INTENSITY_COLORS[7],  label: '1 exercise'   },
-        { color: INTENSITY_COLORS[3],  label: 'Secondary'    },
-        { color: '#293548',            label: 'Not targeted' },
-      ] as const).map(({ color, label }) => (
-        <div key={label} className="flex items-center gap-1.5">
-          <div className="w-2.5 h-2.5 rounded-full" style={{ background: color }} />
-          <span className="text-[10px] text-gray-500">{label}</span>
+    <div className="flex flex-col items-center gap-1.5">
+      {[ROW1, ROW2].map((row, i) => (
+        <div key={i} className="flex gap-3 justify-center">
+          {row.map(({ color, label }) => (
+            <div key={label} className="flex items-center gap-1.5">
+              <div className="w-2.5 h-2.5 rounded-full shrink-0" style={{ background: color }} />
+              <span className="text-[10px] text-gray-500 whitespace-nowrap">{label}</span>
+            </div>
+          ))}
         </div>
       ))}
     </div>

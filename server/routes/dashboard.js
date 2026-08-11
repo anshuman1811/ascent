@@ -40,7 +40,7 @@ router.get('/:userId/daily', (req, res) => {
       COALESCE(SUM(mi.potassium_mg),    0) as potassium_mg
     FROM meals m
     JOIN meal_items mi ON mi.meal_id = m.id
-    WHERE m.user_id = ? AND date(m.logged_at) = ?
+    WHERE m.user_id = ? AND date(m.logged_at, 'localtime') = ?
   `).get(userId, date);
 
   // Exercise calories burned for the day
@@ -49,7 +49,7 @@ router.get('/:userId/daily', (req, res) => {
       COALESCE(SUM(ws.calories_burned), 0) as calories_burned,
       COUNT(*) as session_count
     FROM workout_sessions ws
-    WHERE ws.user_id = ? AND date(ws.started_at) = ? AND ws.status = 'completed'
+    WHERE ws.user_id = ? AND date(ws.started_at, 'localtime') = ? AND ws.status = 'completed'
   `).get(userId, date);
 
   // Meal breakdown by type
@@ -61,7 +61,7 @@ router.get('/:userId/daily', (req, res) => {
       COALESCE(SUM(mi.fat_g),     0) as fat_g
     FROM meals m
     JOIN meal_items mi ON mi.meal_id = m.id
-    WHERE m.user_id = ? AND date(m.logged_at) = ?
+    WHERE m.user_id = ? AND date(m.logged_at, 'localtime') = ?
     GROUP BY m.meal_type
   `).all(userId, date);
 
@@ -110,12 +110,12 @@ router.get('/:userId/weekly', (req, res) => {
         COALESCE(SUM(mi.carbs_g), 0) as carbs_g,
         COALESCE(SUM(mi.fat_g), 0) as fat_g
       FROM meals m JOIN meal_items mi ON mi.meal_id = m.id
-      WHERE m.user_id = ? AND date(m.logged_at) = ?
+      WHERE m.user_id = ? AND date(m.logged_at, 'localtime') = ?
     `).get(userId, d);
 
     const exercise = db.prepare(`
       SELECT COALESCE(SUM(calories_burned), 0) as calories_burned
-      FROM workout_sessions WHERE user_id = ? AND date(started_at) = ? AND status = 'completed'
+      FROM workout_sessions WHERE user_id = ? AND date(started_at, 'localtime') = ? AND status = 'completed'
     `).get(userId, d);
 
     const net = meals.calories - exercise.calories_burned;
@@ -127,6 +127,7 @@ router.get('/:userId/weekly', (req, res) => {
       protein_g: Math.round(meals.protein_g),
       carbs_g: Math.round(meals.carbs_g),
       fat_g: Math.round(meals.fat_g),
+      calorie_target: profile?.calorie_target ?? null,
       classification: profile?.calorie_target ? classifyCalories(net, profile.calorie_target) : null,
     };
   });
@@ -145,26 +146,26 @@ router.get('/:userId/monthly', (req, res) => {
       COALESCE(AVG(calories), 0) as avg_calories,
       COALESCE(AVG(protein_g), 0) as avg_protein_g
     FROM (
-      SELECT date(m.logged_at) as day,
+      SELECT date(m.logged_at, 'localtime') as day,
         SUM(mi.calories) as calories,
         SUM(mi.protein_g) as protein_g
       FROM meals m JOIN meal_items mi ON mi.meal_id = m.id
-      WHERE m.user_id = ? AND strftime('%Y-%m', m.logged_at) = ?
+      WHERE m.user_id = ? AND strftime('%Y-%m', m.logged_at, 'localtime') = ?
       GROUP BY day
     ) daily
   `).get(userId, month);
 
   // Weight trend for month
   const weightLog = db.prepare(`
-    SELECT weight_value, weight_unit, date(logged_at) as date
-    FROM weight_log WHERE user_id = ? AND strftime('%Y-%m', logged_at) = ?
+    SELECT weight_value, weight_unit, date(logged_at, 'localtime') as date
+    FROM weight_log WHERE user_id = ? AND strftime('%Y-%m', logged_at, 'localtime') = ?
     ORDER BY logged_at ASC
   `).all(userId, month);
 
   // Workout consistency
   const workoutDays = db.prepare(`
-    SELECT COUNT(DISTINCT date(started_at)) as days
-    FROM workout_sessions WHERE user_id = ? AND strftime('%Y-%m', started_at) = ? AND status = 'completed'
+    SELECT COUNT(DISTINCT date(started_at, 'localtime')) as days
+    FROM workout_sessions WHERE user_id = ? AND strftime('%Y-%m', started_at, 'localtime') = ? AND status = 'completed'
   `).get(userId, month);
 
   res.json({ month, summary, weight_log: weightLog, workout_days: workoutDays.days });

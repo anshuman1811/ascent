@@ -13,3 +13,41 @@
   .hide-scrollbar::-webkit-scrollbar { display: none; }
   .hide-scrollbar { -ms-overflow-style: none; scrollbar-width: none; }
 }
+
+/* <main>'s left padding needs to clear the landscape icon rail (Nav.tsx), whose width
+   includes env(safe-area-inset-left) to stay clear of a notch/Dynamic Island landing on
+   that side when a phone is rotated. Defined here (not a plain Tailwind landscape: utility)
+   because it needs the same env()-aware calc as the rail itself, not a flat px value. */
+main {
+  --landscape-nav-pl: 0px;
+}
+@media (orientation: landscape) {
+  main {
+    --landscape-nav-pl: calc(2.75rem + env(safe-area-inset-left));
+  }
+}
+@media (min-width: 1024px) {
+  /* Desktop sidebar replaces the icon rail entirely — no left padding needed regardless of orientation */
+  main {
+    --landscape-nav-pl: 0px;
+  }
+}
+
+/* Forces a landscape-like layout on phones held in portrait by rotating the
+   whole viewport 90deg via CSS (no native orientation-lock API support on iOS
+   Safari outside of fullscreen PWAs, so this is the cross-browser approach). */
+.force-landscape {
+  width: 100vw;
+  height: 100vh;
+}
+@media (orientation: portrait) {
+  .force-landscape {
+    position: fixed;
+    top: 0;
+    left: 0;
+    width: 100vh;
+    height: 100vw;
+    transform-origin: top left;
+    transform: rotate(90deg) translateY(-100%);
+  }
+}

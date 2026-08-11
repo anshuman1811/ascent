@@ -210,6 +210,23 @@ db.exec(`
     quantity           REAL NOT NULL DEFAULT 100
   );
   CREATE INDEX IF NOT EXISTS idx_food_ingredients ON food_ingredients(food_id);
+
+  CREATE TABLE IF NOT EXISTS workout_regimes (
+    id         INTEGER PRIMARY KEY,
+    user_id    INTEGER NOT NULL REFERENCES users(id),
+    name       TEXT NOT NULL,
+    notes      TEXT,
+    created_at TEXT NOT NULL DEFAULT (datetime('now')),
+    updated_at TEXT NOT NULL DEFAULT (datetime('now'))
+  );
+
+  CREATE TABLE IF NOT EXISTS regime_days (
+    id         INTEGER PRIMARY KEY,
+    regime_id  INTEGER NOT NULL REFERENCES workout_regimes(id) ON DELETE CASCADE,
+    day_index  INTEGER NOT NULL,
+    routine_id INTEGER NOT NULL REFERENCES routines(id)
+  );
+  CREATE INDEX IF NOT EXISTS idx_regime_days_regime ON regime_days(regime_id, day_index);
 `);
 
 // ─── Migrations ───────────────────────────────────────────────────────────────
@@ -240,9 +257,69 @@ const MIGRATIONS = [
   // Added sugar (NULL = unknown, not zero — most library foods won't have this set)
   `ALTER TABLE foods ADD COLUMN added_sugar_g REAL`,
   `ALTER TABLE meal_items ADD COLUMN added_sugar_g REAL`,
+  // Active workout regime — drives "next routine" suggestion when starting a workout
+  `ALTER TABLE user_profiles ADD COLUMN active_regime_id INTEGER REFERENCES workout_regimes(id)`,
+  `CREATE TABLE IF NOT EXISTS bug_reports (
+    id          INTEGER PRIMARY KEY,
+    user_id     INTEGER REFERENCES users(id),
+    description TEXT NOT NULL,
+    type        TEXT NOT NULL DEFAULT 'bug',
+    page_url    TEXT,
+    page_title  TEXT,
+    status      TEXT NOT NULL DEFAULT 'open',
+    notes       TEXT,
+    created_at  TEXT NOT NULL DEFAULT (datetime('now')),
+    updated_at  TEXT NOT NULL DEFAULT (datetime('now'))
+  )`,
+  `ALTER TABLE set_logs ADD COLUMN is_assisted INTEGER NOT NULL DEFAULT 0`,
 ];
 for (const sql of MIGRATIONS) {
   try { db.exec(sql); } catch (_) {}
+}
+
+// weight_goal_type's CHECK constraint only allowed ('lose','maintain','gain'), but the app
+// added 'lose_mild' and 'gain_aggressive' goal options without updating it — saving a profile
+// with either of those values threw a CHECK constraint failure (SQLite can't ALTER a CHECK
+// constraint, so the table must be rebuilt). Idempotent: only runs if the old constraint is
+// still in place.
+{
+  const tableSql = db.prepare("SELECT sql FROM sqlite_master WHERE type='table' AND name='user_profiles'").get()?.sql ?? '';
+  if (tableSql.includes("CHECK(weight_goal_type IN ('lose','maintain','gain'))")) {
+    db.transaction(() => {
+      db.exec(`
+        CREATE TABLE user_profiles_new (
+          id               INTEGER PRIMARY KEY,
+          user_id          INTEGER NOT NULL UNIQUE REFERENCES users(id),
+          birth_date       TEXT,
+          sex              TEXT CHECK(sex IN ('male','female','other')),
+          height_value     REAL,
+          height_unit      TEXT NOT NULL DEFAULT 'ft' CHECK(height_unit IN ('ft','cm')),
+          activity_level   TEXT NOT NULL DEFAULT 'moderate'
+                             CHECK(activity_level IN ('sedentary','light','moderate','active','very_active')),
+          calorie_target   REAL,
+          tdee_estimate    REAL,
+          protein_target_g REAL,
+          carbs_target_g   REAL,
+          fat_target_g     REAL,
+          fiber_target_g   REAL,
+          weight_goal_type TEXT NOT NULL DEFAULT 'maintain'
+                             CHECK(weight_goal_type IN ('lose','lose_mild','maintain','gain','gain_aggressive')),
+          target_weight_value REAL,
+          target_weight_unit  TEXT NOT NULL DEFAULT 'lb',
+          weight_unit      TEXT NOT NULL DEFAULT 'lb' CHECK(weight_unit IN ('lb','kg')),
+          volume_unit      TEXT NOT NULL DEFAULT 'oz' CHECK(volume_unit IN ('oz','ml')),
+          length_unit      TEXT NOT NULL DEFAULT 'ft' CHECK(length_unit IN ('ft','cm')),
+          updated_at       TEXT NOT NULL DEFAULT (datetime('now')),
+          sodium_target_mg REAL, sugar_target_g REAL, tracked_macros TEXT, added_sugar_target_g REAL,
+          saturated_fat_target_g REAL, cholesterol_target_mg REAL, potassium_target_mg REAL,
+          active_regime_id INTEGER REFERENCES workout_regimes(id)
+        );
+        INSERT INTO user_profiles_new SELECT * FROM user_profiles;
+        DROP TABLE user_profiles;
+        ALTER TABLE user_profiles_new RENAME TO user_profiles;
+      `);
+    })();
+  }
 }
 
 // ─── Seed ─────────────────────────────────────────────────────────────────────
@@ -308,6 +385,18 @@ db.transaction(() => {
     'Feet shoulder-width, toes slightly out. Brace core, sit hips back and down — chest tall, knees tracking over toes. Reach depth where thighs are parallel or below. Drive through mid-foot to stand. 10–15 reps as movement prep.');
   ex('Scapular Pull-Up',           'reps',  'warmup', ['upper_back','lats'],            ['shoulders'],                 3.0,
     'Hang from a pull-up bar with straight arms. Without bending elbows, depress and retract your shoulder blades to "shrug" upward an inch. Slowly lower back to dead hang. 10 reps. Activates lats and preps scapular stabilizers before pulling work.');
+  ex('90/90 Hip Transfers',        'reps',  'warmup', ['hip_flexor','glutes'],          [],                            2.5,
+    'Sit on the floor with both knees bent 90 degrees, one leg in front and one behind (windshield-wiper position). Rotate both knees together to the opposite side, switching which leg is in front and back. 10 reps. Mobilizes the hip capsules for deep squats.');
+  ex('Bodyweight Pause Squat',     'reps',  'warmup', ['quads','glutes'],               ['hamstrings','core'],         3.0,
+    'Squat down to depth and hold the bottom position for 3 seconds, actively pushing your knees out. Stand back up. 10 reps. Reinforces bottom-position positioning before loading the barbell.');
+  ex('Barbell Primer',             'reps',  'warmup', ['quads','shoulders'],            ['core'],                      3.0,
+    'Perform the first working exercise of the day (squat, deadlift, or press) with just the empty barbell. Move through the full range of motion deliberately. 10–15 reps. Grooves the movement pattern and raises joint temperature before adding load.');
+  ex('Face Pull (Warm-up)',        'reps',  'warmup', ['rear_delts','rotator_cuff'],    ['upper_back'],                2.5,
+    'Cable or band at head height. Light weight. Pull to your face — hands beside ears, elbows high, external rotation at the top. 15 reps. Wakes up the rotator cuff and rear delts before pressing or pulling work.');
+  ex('Band/Towel Dislocate',       'reps',  'warmup', ['shoulders'],                    ['rotator_cuff'],              2.5,
+    'Hold a resistance band or towel with a wide overhand grip, arms straight. Keeping arms straight throughout, raise the band overhead and continue down behind your back, then reverse. 10 reps. Mobilizes the shoulder joint through its full range.');
+  ex('Thoracic Extension (Bench)', 'reps',  'warmup', ['upper_back','lats'],            ['shoulders'],                 2.5,
+    'Kneel in front of a bench and place your elbows on top of it. Drop your chest toward the floor to stretch the lats and extend the upper back. 10 reps. Opens the thoracic spine before overhead and horizontal pressing.');
 
   // ── Strength — Barbell / Squat Rack ─────────────────────────────────────────
   ex('Back Squat',                 'reps',  'strength', ['quads','glutes'],             ['hamstrings','core','lower_back'], 5.5,
@@ -322,6 +411,8 @@ db.transaction(() => {
     'Lie on bench, eyes under bar. Grip 1–2 finger-widths outside shoulder-width. Feet flat on floor. Retract and depress shoulder blades — create a stable arch. Unrack bar over lower chest/upper abs touch point. Lower with control, elbows 45–75° from torso. Touch chest — no bounce. Drive feet into floor and press to lockout.\n\n⚠️ Common mistakes: Flared elbows (shoulder injury risk), bouncing bar off chest, losing upper-back tightness, wrists bent back.');
   ex('Close-Grip Bench Press',     'reps',  'strength', ['triceps','chest'],            ['shoulders'],                      4.5,
     'Same setup as bench press but grip is shoulder-width or slightly inside. Elbows tuck tighter — about 30–45° from torso. Lower bar to lower chest/upper-ab area. Triceps do more work due to reduced pec contribution. Great tricep builder that also reinforces a healthier bench press elbow path.');
+  ex('Incline Barbell Bench Press', 'reps', 'strength', ['chest','triceps'],            ['shoulders'],                      5.0,
+    'Bench set to 30–45°. Grip just outside shoulder-width. Lower bar to upper chest, elbows ~45–75° from torso. Press up and slightly back toward your face. The incline shifts emphasis to the upper chest and front delts — avoid going past 45° or it becomes a shoulder press.');
   ex('Deadlift',                   'reps',  'strength', ['hamstrings','glutes','lower_back'], ['core','upper_back'],        6.0,
     'Bar over mid-foot (~1 inch from shins). Hip-width stance. Hinge to bar, grip just outside legs. Straight arms, neutral spine, lats engaged ("protect your armpits"). Drive floor away — hips and shoulders rise at same rate. Bar stays in contact with legs. Lock out hips and knees simultaneously at the top.\n\n⚠️ Common mistakes: Bar drifting away from body, hips rising before shoulders (stiff-leg deadlift), rounding lower back. Fix with lat engagement cue and appropriate weight.');
   ex('Romanian Deadlift',          'reps',  'strength', ['hamstrings','glutes'],        ['lower_back'],                     5.0,
@@ -478,6 +569,8 @@ db.transaction(() => {
     'Sit on floor, one leg extended, other foot against inner thigh. Hinge at hips (not waist) to reach toward the extended foot — keep spine long. Feel the stretch in the hamstring, not the lower back. If your back rounds excessively, sit on a yoga block. Hold 30–60 seconds per side.');
   ex('Hip Flexor Stretch',         'timed', 'cooldown', ['hip_flexor'],                 ['quads'],                          2.0,
     'Step into a lunge, back knee on floor. Tuck posterior pelvis slightly (squeeze glute on the back leg side). Push hips forward gently — feel the stretch in the front of the back hip. Keep torso upright. Hold 30–60 seconds. Critical after sitting all day or heavy squat/deadlift sessions.');
+  ex('Couch Stretch',              'timed', 'cooldown', ['quads','hip_flexor'],         [],                                 2.0,
+    'Kneel facing away from a couch or wall, back foot propped up against it (shin vertical). Front foot planted flat ahead of you in a lunge. Squeeze the glute on the back leg and drive hips forward. Keep torso upright. A deeper, more intense variant of the standard hip flexor stretch. Hold 30–45 seconds per side.');
   ex('Pigeon Pose',                'timed', 'cooldown', ['glutes','hip_flexor'],         [],                                 2.0,
     'From all fours, bring one knee forward to the same-side wrist, shin angled across the mat. Extend back leg straight. Lower hips toward floor (use a block under hip if needed). Sink into the stretch — deep glute and external hip rotator release. Hold 60–90 seconds per side. Transformative for hip tightness from squats/running.');
   ex("Child's Pose",               'timed', 'cooldown', ['lower_back','lats'],           [],                                 2.0,

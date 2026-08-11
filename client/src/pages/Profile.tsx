@@ -1,4 +1,4 @@
-import { useState, useEffect } from 'react';
+import { useState, useEffect, useRef } from 'react';
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query';
 import { useOutletContext } from 'react-router-dom';
 import { Calculator, Trash2 } from 'lucide-react';
@@ -21,6 +21,7 @@ export default function Profile({ userId: propUserId }: { userId?: number }) {
   const { activeUserId } = useAppStore();
   const userId = propUserId ?? ctx?.userId ?? activeUserId;
   const qc = useQueryClient();
+  const { toast } = useToast();
 
   const { data: user } = useQuery({
     queryKey: ['user', userId],
@@ -42,7 +43,9 @@ export default function Profile({ userId: propUserId }: { userId?: number }) {
     onSuccess: () => {
       qc.invalidateQueries({ queryKey: ['user', userId] });
       qc.invalidateQueries({ queryKey: ['users'] });
+      toast('Saved', 'success');
     },
+    onError: (err: Error) => toast(`Failed to save: ${err.message}`, 'error'),
   });
 
   const saveName = useMutation({
@@ -50,7 +53,9 @@ export default function Profile({ userId: propUserId }: { userId?: number }) {
     onSuccess: () => {
       qc.invalidateQueries({ queryKey: ['user', userId] });
       qc.invalidateQueries({ queryKey: ['users'] });
+      toast('Name saved', 'success');
     },
+    onError: (err: Error) => toast(`Failed to save: ${err.message}`, 'error'),
   });
 
   if (!user) return null;
@@ -80,9 +85,9 @@ export default function Profile({ userId: propUserId }: { userId?: number }) {
         ))}
       </div>
 
-      {tab === 'targets' && <TargetsTab user={user} weightLog={weightLog} onSave={data => saveProfile.mutate(data)} saving={saveProfile.isPending} />}
-      {tab === 'weight' && <WeightTab userId={userId} weightLog={weightLog} user={user} qc={qc} />}
-      {tab === 'settings' && <SettingsTab user={user} onSave={data => saveProfile.mutate(data)} saving={saveProfile.isPending} />}
+      {tab === 'targets' && <TargetsTab key={userId} user={user} weightLog={weightLog} onSave={data => saveProfile.mutate(data)} saving={saveProfile.isPending} />}
+      {tab === 'weight' && <WeightTab key={userId} userId={userId} weightLog={weightLog} user={user} qc={qc} />}
+      {tab === 'settings' && <SettingsTab key={userId} user={user} onSave={data => saveProfile.mutate(data)} saving={saveProfile.isPending} />}
     </div>
   );
 }
@@ -184,7 +189,8 @@ function TargetsTab({ user, weightLog, onSave, saving }: { user: User; weightLog
     sex: user.sex ?? 'male',
     height_value: user.height_value ?? '',
     height_unit: user.height_unit,
-    activity_level: user.activity_level,
+    // Normalize legacy 'active'/'very_active' → 'moderate' since NEAT_OFFSET only has 3 levels
+    activity_level: (user.activity_level === 'active' || user.activity_level === 'very_active') ? 'moderate' : (user.activity_level ?? 'sedentary'),
     calorie_target: user.calorie_target ?? '',
     tdee_estimate: user.tdee_estimate ?? '',
     // Per-macro target fields (all optional)
@@ -216,13 +222,13 @@ function TargetsTab({ user, weightLog, onSave, saving }: { user: User; weightLog
     return w.weight_unit === 'kg' ? w.weight_value : w.weight_value * 0.453592;
   })();
 
-  // Auto-fill macros on mount when calorie target is set but macros are missing
+  // Auto-fill macros on mount when calorie target is set but macros are missing.
+  // Only populates the form — never auto-saves, user must hit Save Targets.
   useEffect(() => {
     const cal = Number(form.calorie_target);
     if (cal && (!user.carbs_target_g || !user.fat_target_g)) {
       const macros = computeMacros(cal, latestWeightKg, form.weight_goal_type, form.sex);
       setForm(f => ({ ...f, ...macros }));
-      onSave(macros);
     }
   // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []); // intentionally mount-only — catches first-time setup
@@ -237,8 +243,15 @@ function TargetsTab({ user, weightLog, onSave, saving }: { user: User; weightLog
     });
   }
 
-  // Auto-compute TDEE whenever physical stats or goal change — no manual button needed
+  // Auto-compute TDEE whenever physical stats or goal change — no manual button needed.
+  // Skips its first run: the form already holds the user's saved values on mount, and
+  // latestWeightKg resolving asynchronously right after mount must not silently overwrite them.
+  const skipFirstTdeeRecalc = useRef(true);
   useEffect(() => {
+    if (skipFirstTdeeRecalc.current) {
+      skipFirstTdeeRecalc.current = false;
+      return;
+    }
     const latestWeight = weightLog[0];
     if (!form.birth_date || !Number(form.height_value) || !latestWeight) return;
 
@@ -262,8 +275,11 @@ function TargetsTab({ user, weightLog, onSave, saving }: { user: User; weightLog
       const macros = needsMacros ? computeMacros(target, latestWeightKg, form.weight_goal_type, form.sex) : {};
       return { ...f, tdee_estimate: String(sedentaryTdee), calorie_target: String(target), ...macros };
     });
+  // latestWeightKg intentionally excluded — it resolves asynchronously right after mount
+  // (once the weight-log query loads) and must not by itself trigger a recompute that
+  // overwrites the user's just-loaded saved values before they've touched anything.
   // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [form.birth_date, form.sex, form.height_value, form.height_unit, form.activity_level, form.weight_goal_type, latestWeightKg]);
+  }, [form.birth_date, form.sex, form.height_value, form.height_unit, form.activity_level, form.weight_goal_type]);
 
   // When goal changes, just update the field — useEffect above handles calorie_target recalc
   function handleGoalChange(e: React.ChangeEvent<HTMLSelectElement>) {
@@ -306,7 +322,7 @@ function TargetsTab({ user, weightLog, onSave, saving }: { user: User; weightLog
         </div>
         <Select
           label="Daily movement (excl. workouts)"
-          value={form.activity_level === 'active' || form.activity_level === 'very_active' ? 'moderate' : form.activity_level}
+          value={form.activity_level}
           onChange={sel('activity_level')}
           options={[
             { value: 'sedentary', label: 'Sedentary — desk all day, minimal walking (+0 kcal)' },

@@ -3,6 +3,7 @@ import { Settings } from 'lucide-react';
 import Nav from './Nav';
 import UserSwitcher from './UserSwitcher';
 import AscentLogo from '../ui/AscentLogo';
+import BugReportButton from '../ui/BugReportButton';
 import { useAppStore } from '../../store/appStore';
 
 interface Props { userId?: number; }
@@ -19,7 +20,7 @@ export default function Layout({ userId }: Props) {
         <div className="p-4 border-b border-gray-800">
           <AscentLogo size={26} showText textSize="text-lg" />
           {!userId && <UserSwitcher users={users} activeId={activeUserId} onChange={setActiveUserId} />}
-          {user && (
+          {userId && user && (
             <div className="mt-2 flex items-center gap-2">
               <span className="w-2.5 h-2.5 rounded-full" style={{ background: user.avatar_color }} />
               <span className="text-sm font-medium text-white">{user.name}</span>
@@ -30,17 +31,20 @@ export default function Layout({ userId }: Props) {
       </aside>
 
       {/* Main content */}
-      <main className="flex-1 overflow-y-auto
+      <main
+        className="flex-1 overflow-y-auto overflow-x-hidden
         pb-20 portrait:pb-20 landscape:pb-0
-        pl-0 landscape:pl-11
-        lg:pb-0 lg:pl-0">
+        pl-0
+        lg:pb-0 lg:pl-0"
+        style={{ paddingLeft: 'var(--landscape-nav-pl, 0px)' }}
+      >
 
         {/* Mobile header — portrait only; landscape uses the icon rail instead */}
         <header className="portrait:flex landscape:hidden lg:hidden items-center justify-between px-4 py-3 bg-gray-900 border-b border-gray-800 sticky top-0 z-30">
           <AscentLogo size={22} showText textSize="text-base" />
           <div className="flex items-center gap-2">
             {!userId && <UserSwitcher users={users} activeId={activeUserId} onChange={setActiveUserId} compact />}
-            {user && (
+            {userId && user && (
               <div className="flex items-center gap-1.5">
                 <span className="w-2 h-2 rounded-full" style={{ background: user.avatar_color }} />
                 <span className="text-sm font-medium">{user.name}</span>
@@ -61,6 +65,8 @@ export default function Layout({ userId }: Props) {
 
       {/* Mobile nav — handles both portrait (bottom bar) and landscape (left rail) */}
       <Nav orientation="horizontal" className="lg:hidden" />
+
+      <BugReportButton />
     </div>
   );
 }

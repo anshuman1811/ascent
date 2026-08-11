@@ -1,7 +1,7 @@
-import { useState } from 'react';
+import { useState, useRef, useEffect } from 'react';
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query';
 import { useOutletContext } from 'react-router-dom';
-import { Plus, Trash2, ChevronDown, ChevronUp, Clock, ChevronLeft, ChevronRight, Pencil, Check, X, Zap } from 'lucide-react';
+import { Plus, Trash2, ChevronDown, ChevronUp, Clock, ChevronLeft, ChevronRight, Pencil, Check, X, Zap, Sparkles } from 'lucide-react';
 import { api } from '../api/client';
 import { useAppStore } from '../store/appStore';
 import { parseSQLiteLocal, convertToServingUnit, MASS_VOL_UNITS } from '../utils/units';
@@ -16,6 +16,27 @@ import ImageGallery from '../components/ui/ImageGallery';
 import type { ChangeEvent } from 'react';
 
 interface OutletCtx { userId: number; }
+
+interface AiParsedItem {
+  name: string;
+  serving_size: number;
+  serving_unit: string;
+  quantity: number;
+  calories: number;
+  protein_g: number;
+  carbs_g: number;
+  fat_g: number;
+  fiber_g: number;
+  sugar_g: number;
+  saturated_fat_g?: number;
+  sodium_mg?: number;
+  cholesterol_mg?: number;
+  potassium_mg?: number;
+  added_sugar_g?: number;
+  // runtime UI state
+  _qty: string;
+  _include: boolean;
+}
 
 const MEAL_TYPES: { value: MealType; label: string }[] = [
   { value: 'breakfast',    label: '🌅 Breakfast' },
@@ -48,6 +69,10 @@ export default function FoodLog({ userId: propUserId }: { userId?: number }) {
 
   const [date, setDate] = useState(today);
   const isToday = date === today();
+  const swipeStartX = useRef(0);
+  const swipeStartY = useRef(0);
+  const [dragX, setDragX] = useState(0);
+  const [swipeTransition, setSwipeTransition] = useState(false);
   const [addMealOpen, setAddMealOpen] = useState(false);
   const [addFoodOpen, setAddFoodOpen] = useState<number | null>(null); // mealId
   const [expandedMeals, setExpandedMeals] = useState<Set<number>>(new Set());
@@ -68,8 +93,8 @@ export default function FoodLog({ userId: propUserId }: { userId?: number }) {
     mutationFn: (data: { meal_type: MealType; user_id: number }) =>
       api.post<Meal>('/meals', {
         ...data,
-        // preserve the browsed date when logging past/future meals
-        logged_at: date !== today() ? `${date}T12:00:00` : undefined,
+        // preserve the browsed date; use noon local time so the date survives UTC conversion
+        logged_at: date !== today() ? new Date(`${date}T12:00:00`).toISOString() : undefined,
       }),
     onSuccess: (meal) => {
       invalidate();
@@ -127,7 +152,41 @@ export default function FoodLog({ userId: propUserId }: { userId?: number }) {
   });
 
   return (
-    <div className="space-y-4">
+    <div
+      className="space-y-4"
+      style={{ transform: `translateX(${dragX}px)`, transition: swipeTransition ? 'transform 0.2s ease-out' : 'none' }}
+      onTouchStart={e => {
+        swipeStartX.current = e.touches[0].clientX;
+        swipeStartY.current = e.touches[0].clientY;
+        setSwipeTransition(false);
+      }}
+      onTouchMove={e => {
+        const dx = e.touches[0].clientX - swipeStartX.current;
+        const dy = e.touches[0].clientY - swipeStartY.current;
+        if (Math.abs(dy) > Math.abs(dx)) return;
+        setDragX(dx < 0 && isToday ? Math.max(dx * 0.15, -25) : dx);
+      }}
+      onTouchEnd={e => {
+        const dx = e.changedTouches[0].clientX - swipeStartX.current;
+        const isForward = dx < 0;
+        if (Math.abs(dx) > 60 && !(isForward && isToday)) {
+          setSwipeTransition(true);
+          setDragX(isForward ? -window.innerWidth : window.innerWidth);
+          setTimeout(() => {
+            shiftDate(isForward ? 1 : -1);
+            setSwipeTransition(false);
+            setDragX(isForward ? window.innerWidth : -window.innerWidth);
+            requestAnimationFrame(() => requestAnimationFrame(() => {
+              setSwipeTransition(true);
+              setDragX(0);
+            }));
+          }, 120);
+        } else {
+          setSwipeTransition(true);
+          setDragX(0);
+        }
+      }}
+    >
       {/* Date navigator */}
       <div className="flex items-center justify-between">
         <button onClick={() => shiftDate(-1)} className="p-1.5 rounded-lg hover:bg-gray-800 text-gray-400 hover:text-white transition-colors">
@@ -302,6 +361,123 @@ function MealCard({ meal, expanded, onToggle, onAddFood, onDelete, onDeleteItem,
   );
 }
 
+// ─── Ingredient breakdown ─────────────────────────────────────────────────────
+
+type FoodIngredient = {
+  id: number; food_id: number; ingredient_food_id: number; quantity: number;
+  name: string; brand?: string; serving_size: number; serving_unit: string;
+  calories: number; protein_g: number; carbs_g: number; fat_g: number;
+  fiber_g: number; sugar_g: number;
+};
+
+type IngredMacros = { calories: number; protein_g: number; carbs_g: number; fat_g: number; fiber_g: number; sugar_g: number };
+
+function IngredientBreakdown({ foodId, onMacrosChanged }: {
+  foodId: number;
+  onMacrosChanged: (macros: IngredMacros) => void;
+}) {
+  const [ingredients, setIngredients] = useState<FoodIngredient[] | null>(null);
+  const [editingId, setEditingId] = useState<number | null>(null);
+  const [editQty, setEditQty] = useState('');
+  const [editUnit, setEditUnit] = useState('');
+  const [saving, setSaving] = useState(false);
+
+  useEffect(() => {
+    api.get<FoodIngredient[]>(`/foods/${foodId}/ingredients`).then(setIngredients);
+  }, [foodId]);
+
+  function startEdit(ingred: FoodIngredient) {
+    setEditingId(ingred.id);
+    setEditQty(String(ingred.quantity));
+    setEditUnit(ingred.serving_unit);
+  }
+
+  function handleUnitChange(newUnit: string) {
+    const q = parseFloat(editQty);
+    if (!isNaN(q)) setEditQty(String(convertToServingUnit(q, editUnit, newUnit)));
+    setEditUnit(newUnit);
+  }
+
+  async function saveIngredient(ingred: FoodIngredient) {
+    const rawQty = parseFloat(editQty);
+    if (isNaN(rawQty) || rawQty <= 0) return;
+    const newQty = editUnit !== ingred.serving_unit
+      ? convertToServingUnit(rawQty, editUnit, ingred.serving_unit)
+      : rawQty;
+    setSaving(true);
+    try {
+      await api.put(`/foods/ingredients/${ingred.id}`, { quantity: newQty });
+      const updated = ingredients!.map(i => i.id === ingred.id ? { ...i, quantity: newQty } : i);
+      setIngredients(updated);
+      setEditingId(null);
+      const totals = updated.reduce((acc, i) => {
+        const s = i.quantity / i.serving_size;
+        return { calories: acc.calories + i.calories * s, protein_g: acc.protein_g + i.protein_g * s,
+          carbs_g: acc.carbs_g + i.carbs_g * s, fat_g: acc.fat_g + i.fat_g * s,
+          fiber_g: acc.fiber_g + i.fiber_g * s, sugar_g: acc.sugar_g + i.sugar_g * s };
+      }, { calories: 0, protein_g: 0, carbs_g: 0, fat_g: 0, fiber_g: 0, sugar_g: 0 });
+      const rounded: IngredMacros = {
+        calories: Math.round(totals.calories), protein_g: Math.round(totals.protein_g),
+        carbs_g: Math.round(totals.carbs_g), fat_g: Math.round(totals.fat_g),
+        fiber_g: Math.round(totals.fiber_g), sugar_g: Math.round(totals.sugar_g),
+      };
+      await api.put(`/foods/${foodId}`, rounded);
+      onMacrosChanged(rounded);
+    } finally {
+      setSaving(false);
+    }
+  }
+
+  if (ingredients === null) return (
+    <div className="px-4 py-2 text-xs text-gray-500 italic">Loading breakdown…</div>
+  );
+  if (ingredients.length === 0) return (
+    <div className="px-4 py-2 text-xs text-gray-600 italic">No ingredient breakdown saved</div>
+  );
+  return (
+    <div className="px-4 pb-3 space-y-1.5">
+      <p className="text-[10px] text-gray-600 pt-1 uppercase tracking-wider">Ingredients</p>
+      {ingredients.map(ingred => {
+        const scale = ingred.quantity / ingred.serving_size;
+        const isEditing = editingId === ingred.id;
+        return (
+          <div key={ingred.id} className="flex items-center gap-1.5 group/ingred">
+            <span className="text-xs text-gray-400 flex-1 truncate">{ingred.name}</span>
+            {isEditing ? (
+              <>
+                <input type="number" value={editQty} onChange={e => setEditQty(e.target.value)} autoFocus
+                  className="w-14 bg-gray-800 border border-gray-700 rounded px-1.5 py-0.5 text-xs text-white focus:border-indigo-500 outline-none" />
+                {MASS_VOL_UNITS.includes(ingred.serving_unit) ? (
+                  <select value={editUnit} onChange={e => handleUnitChange(e.target.value)}
+                    className="bg-gray-800 border border-gray-700 rounded px-1 py-0.5 text-[10px] text-gray-300 focus:border-indigo-500 outline-none">
+                    {MASS_VOL_UNITS.map(u => <option key={u} value={u}>{u}</option>)}
+                  </select>
+                ) : (
+                  <span className="text-[10px] text-gray-500">{ingred.serving_unit}</span>
+                )}
+                <button onClick={() => saveIngredient(ingred)} disabled={saving}
+                  className="p-0.5 text-indigo-400 hover:text-indigo-300 disabled:opacity-50"><Check size={11} /></button>
+                <button onClick={() => setEditingId(null)}
+                  className="p-0.5 text-gray-600 hover:text-gray-400"><X size={11} /></button>
+              </>
+            ) : (
+              <>
+                <span className="text-[10px] text-gray-500 shrink-0">
+                  {ingred.quantity % 1 === 0 ? ingred.quantity : ingred.quantity.toFixed(1)}{ingred.serving_unit} · {Math.round(ingred.calories * scale)} kcal
+                </span>
+                <button onClick={() => startEdit(ingred)}
+                  className="p-0.5 text-gray-700 hover:text-indigo-400 opacity-0 group-hover/ingred:opacity-100 transition-opacity">
+                  <Pencil size={10} />
+                </button>
+              </>
+            )}
+          </div>
+        );
+      })}
+    </div>
+  );
+}
+
 // ─── FoodItemRow — inline qty editing ─────────────────────────────────────────
 
 function FoodItemRow({ item, onDelete, onEdit }: {
@@ -311,6 +487,7 @@ function FoodItemRow({ item, onDelete, onEdit }: {
 }) {
   const [editing, setEditing] = useState(false);
   const [confirmDelete, setConfirmDelete] = useState(false);
+  const [editUnit, setEditUnit] = useState(item.serving_unit);
   const [form, setForm] = useState({
     quantity: String(item.quantity),
     calories: String(Math.round(item.calories)),
@@ -322,6 +499,7 @@ function FoodItemRow({ item, onDelete, onEdit }: {
   });
 
   function startEdit() {
+    setEditUnit(item.serving_unit);
     setForm({
       quantity: String(item.quantity),
       calories: String(Math.round(item.calories)),
@@ -334,8 +512,19 @@ function FoodItemRow({ item, onDelete, onEdit }: {
     setEditing(true);
   }
 
+  function handleUnitChange(newUnit: string) {
+    const currentQty = parseFloat(form.quantity);
+    if (!isNaN(currentQty)) {
+      setForm(f => ({ ...f, quantity: String(convertToServingUnit(currentQty, editUnit, newUnit)) }));
+    }
+    setEditUnit(newUnit);
+  }
+
   function save() {
-    const qty = parseFloat(form.quantity);
+    const rawQty = parseFloat(form.quantity);
+    const qty = editUnit !== item.serving_unit
+      ? convertToServingUnit(rawQty, editUnit, item.serving_unit)
+      : rawQty;
     const data: MealItemEdit = {};
     if (!isNaN(qty) && qty > 0 && qty !== item.quantity) data.quantity = qty;
     const macroFields: (keyof MealItemEdit)[] = ['calories', 'protein_g', 'carbs_g', 'fat_g', 'fiber_g', 'sugar_g'];
@@ -350,6 +539,8 @@ function FoodItemRow({ item, onDelete, onEdit }: {
 
   const setF = (k: keyof typeof form) => (e: ChangeEvent<HTMLInputElement>) => setForm(f => ({ ...f, [k]: e.target.value }));
 
+  const [showIngredients, setShowIngredients] = useState(false);
+
   if (editing) {
     return (
       <div className="px-4 py-3 border-b border-gray-800/50 last:border-0 bg-gray-800/30 space-y-2">
@@ -358,7 +549,16 @@ function FoodItemRow({ item, onDelete, onEdit }: {
           <span className="text-xs text-gray-500 w-14 shrink-0">Quantity</span>
           <input type="number" value={form.quantity} onChange={setF('quantity')} autoFocus
             className="w-20 bg-gray-800 border border-gray-700 rounded-lg px-2 py-1 text-xs text-white focus:border-indigo-500 outline-none" />
-          <span className="text-xs text-gray-500">{item.serving_unit}</span>
+          {MASS_VOL_UNITS.includes(item.serving_unit) ? (
+            <Select
+              value={editUnit}
+              onChange={e => handleUnitChange(e.target.value)}
+              className="w-16 text-xs py-0.5"
+              options={MASS_VOL_UNITS.map(u => ({ value: u, label: u }))}
+            />
+          ) : (
+            <span className="text-xs text-gray-500">{item.serving_unit}</span>
+          )}
         </div>
         <div className="grid grid-cols-3 gap-1.5">
           {([
@@ -382,41 +582,56 @@ function FoodItemRow({ item, onDelete, onEdit }: {
   }
 
   return (
-    <div className="flex items-center justify-between px-4 py-2.5 border-b border-gray-800/50 last:border-0">
-      <div className="min-w-0 flex-1">
-        <p className="text-sm text-white truncate">{item.food_name}</p>
-        <p className="text-xs text-gray-500">{item.quantity} {item.serving_unit} · {Math.round(item.calories)} kcal</p>
+    <div className="border-b border-gray-800/50 last:border-0">
+      <div className="flex items-center justify-between px-4 py-2.5">
+        <div className="min-w-0 flex-1">
+          <p className="text-sm text-white truncate">{item.food_name}</p>
+          <p className="text-xs text-gray-500">{item.quantity} {item.serving_unit} · {Math.round(item.calories)} kcal</p>
+        </div>
+        <div className="flex items-center gap-2 shrink-0 ml-2">
+          {confirmDelete ? (
+            <>
+              <button onClick={() => { onDelete(); setConfirmDelete(false); }}
+                className="text-[11px] px-1.5 py-0.5 rounded bg-red-900/50 text-red-400 hover:bg-red-900 transition-colors">
+                Del
+              </button>
+              <button onClick={() => setConfirmDelete(false)}
+                className="text-[11px] px-1.5 py-0.5 rounded bg-gray-800 text-gray-400 hover:text-white transition-colors">
+                No
+              </button>
+            </>
+          ) : (
+            <>
+              <div className="text-right text-xs text-gray-500">
+                <span>P{Math.round(item.protein_g)}</span>
+                {' · '}
+                <span>C{Math.round(item.carbs_g)}</span>
+                {' · '}
+                <span>F{Math.round(item.fat_g)}</span>
+              </div>
+              {item.brand === 'Quick Entry' && (
+                <button onClick={() => setShowIngredients(s => !s)}
+                  className="p-1 text-gray-600 hover:text-indigo-400 transition-colors"
+                  title={showIngredients ? 'Hide ingredients' : 'Show ingredients'}>
+                  {showIngredients ? <ChevronUp size={13} /> : <ChevronDown size={13} />}
+                </button>
+              )}
+              <button onClick={startEdit} className="p-1 text-gray-600 hover:text-indigo-400 transition-colors">
+                <Pencil size={13} />
+              </button>
+              <button onClick={() => setConfirmDelete(true)} className="p-1 text-gray-600 hover:text-red-400 transition-colors">
+                <Trash2 size={13} />
+              </button>
+            </>
+          )}
+        </div>
       </div>
-      <div className="flex items-center gap-2 shrink-0 ml-2">
-        {confirmDelete ? (
-          <>
-            <button onClick={() => { onDelete(); setConfirmDelete(false); }}
-              className="text-[11px] px-1.5 py-0.5 rounded bg-red-900/50 text-red-400 hover:bg-red-900 transition-colors">
-              Del
-            </button>
-            <button onClick={() => setConfirmDelete(false)}
-              className="text-[11px] px-1.5 py-0.5 rounded bg-gray-800 text-gray-400 hover:text-white transition-colors">
-              No
-            </button>
-          </>
-        ) : (
-          <>
-            <div className="text-right text-xs text-gray-500">
-              <span>P{Math.round(item.protein_g)}</span>
-              {' · '}
-              <span>C{Math.round(item.carbs_g)}</span>
-              {' · '}
-              <span>F{Math.round(item.fat_g)}</span>
-            </div>
-            <button onClick={startEdit} className="p-1 text-gray-600 hover:text-indigo-400 transition-colors">
-              <Pencil size={13} />
-            </button>
-            <button onClick={() => setConfirmDelete(true)} className="p-1 text-gray-600 hover:text-red-400 transition-colors">
-              <Trash2 size={13} />
-            </button>
-          </>
-        )}
-      </div>
+      {showIngredients && (
+        <IngredientBreakdown
+          foodId={item.food_id}
+          onMacrosChanged={(macros) => onEdit(macros)}
+        />
+      )}
     </div>
   );
 }
@@ -456,6 +671,9 @@ interface RecentItem {
   fiber_g: number;
   meal_type: string;
   meal_date: string;
+  logged_by_user_id: number;
+  logged_by_name: string;
+  is_mine: boolean;
 }
 
 const MEAL_LABELS: Record<string, string> = {
@@ -477,6 +695,12 @@ function AddFoodModal({ open, mealId, userId, onClose, onAdded }: {
   const [createFoodTarget, setCreateFoodTarget] = useState<'main' | 'ingredient'>('main');
   const [lastAdded, setLastAdded] = useState<string | null>(null);
   const [showRecent, setShowRecent] = useState(false);
+
+  // AI parse state
+  const [showAiParse, setShowAiParse] = useState(false);
+  const [aiText, setAiText] = useState('');
+  const [aiItems, setAiItems] = useState<AiParsedItem[] | null>(null);
+  const [aiError, setAiError] = useState<string | null>(null);
 
   // Quick log state
   const [showQuickLog, setShowQuickLog] = useState(false);
@@ -565,40 +789,92 @@ function AddFoodModal({ open, mealId, userId, onClose, onAdded }: {
 
   const quickLogIngredients = useMutation({
     mutationFn: async () => {
-      const name = ingredMealName.trim();
-      if (name) {
-        const totals = ingredList.reduce((acc, { food, quantity: qty, unit: u }) => {
-          const scale = convertToServingUnit(qty, u || food.serving_unit, food.serving_unit) / food.serving_size;
-          return {
-            calories: acc.calories + food.calories * scale,
-            protein_g: acc.protein_g + food.protein_g * scale,
-            carbs_g: acc.carbs_g + food.carbs_g * scale,
-            fat_g: acc.fat_g + food.fat_g * scale,
-            fiber_g: acc.fiber_g + (food.fiber_g || 0) * scale,
-            sugar_g: acc.sugar_g + (food.sugar_g || 0) * scale,
-          };
-        }, { calories: 0, protein_g: 0, carbs_g: 0, fat_g: 0, fiber_g: 0, sugar_g: 0 });
-        const food = await api.post<Food>('/foods', {
-          name, brand: 'Quick Entry', serving_size: 1, serving_unit: 'serving',
-          calories: Math.round(totals.calories), protein_g: Math.round(totals.protein_g),
-          carbs_g: Math.round(totals.carbs_g), fat_g: Math.round(totals.fat_g),
-          fiber_g: Math.round(totals.fiber_g), sugar_g: Math.round(totals.sugar_g),
-        });
-        await api.post(`/meals/${mealId}/items`, { food_id: food.id, quantity: 1 });
-      } else {
-        for (const item of ingredList) {
-          await api.post(`/meals/${mealId}/items`, {
-            food_id: item.food.id,
-            quantity: convertToServingUnit(item.quantity, item.unit || item.food.serving_unit, item.food.serving_unit),
-          });
-        }
+      const name = ingredMealName.trim() || 'Mixed Ingredients';
+      const totals = ingredList.reduce((acc, { food, quantity: qty, unit: u }) => {
+        const scale = convertToServingUnit(qty, u || food.serving_unit, food.serving_unit) / food.serving_size;
+        return {
+          calories: acc.calories + food.calories * scale,
+          protein_g: acc.protein_g + food.protein_g * scale,
+          carbs_g: acc.carbs_g + food.carbs_g * scale,
+          fat_g: acc.fat_g + food.fat_g * scale,
+          fiber_g: acc.fiber_g + (food.fiber_g || 0) * scale,
+          sugar_g: acc.sugar_g + (food.sugar_g || 0) * scale,
+        };
+      }, { calories: 0, protein_g: 0, carbs_g: 0, fat_g: 0, fiber_g: 0, sugar_g: 0 });
+      const food = await api.post<Food>('/foods', {
+        name, brand: 'Quick Entry', serving_size: 1, serving_unit: 'serving',
+        calories: Math.round(totals.calories), protein_g: Math.round(totals.protein_g),
+        carbs_g: Math.round(totals.carbs_g), fat_g: Math.round(totals.fat_g),
+        fiber_g: Math.round(totals.fiber_g), sugar_g: Math.round(totals.sugar_g),
+      });
+      await api.post(`/meals/${mealId}/items`, { food_id: food.id, quantity: 1 });
+      // Store each ingredient so breakdown can be viewed and edited later
+      for (const item of ingredList) {
+        const qty = convertToServingUnit(item.quantity, item.unit || item.food.serving_unit, item.food.serving_unit);
+        await api.post(`/foods/${food.id}/ingredients`, { ingredient_food_id: item.food.id, quantity: qty });
       }
     },
     onSuccess: () => {
       onAdded();
-      setLastAdded(ingredMealName.trim() || `${ingredList.length} ingredients`);
+      setLastAdded(ingredMealName.trim() || 'Mixed Ingredients');
       setIngredList([]); setIngredSearch(''); setIngredMealName('');
       setShowQuickLog(false);
+    },
+  });
+
+  const parseFood = useMutation({
+    mutationFn: (text: string) => api.post<{ items: Omit<AiParsedItem, '_qty' | '_include'>[] }>('/ai/parse-food', { text }),
+    onSuccess: (data) => {
+      setAiItems(data.items.map(item => ({ ...item, _qty: String(item.quantity), _include: true })));
+      setAiError(null);
+    },
+    onError: (e: Error) => setAiError(e.message),
+  });
+
+  const logAiItems = useMutation({
+    mutationFn: async (items: AiParsedItem[]) => {
+      for (const item of items.filter(i => i._include)) {
+        const qty = parseFloat(item._qty) || item.quantity;
+
+        // Try to reuse an existing library food by exact name match
+        let food: Food | null = null;
+        try {
+          const results = await api.get<Food[]>(`/foods?search=${encodeURIComponent(item.name)}&limit=10`);
+          food = results.find(f => f.name.toLowerCase() === item.name.toLowerCase()) ?? null;
+        } catch { /* ignore search errors, fall through to create */ }
+
+        if (!food) {
+          food = await api.post<Food>('/foods', {
+            name: item.name,
+            brand: 'AI Parse',
+            serving_size: item.serving_size,
+            serving_unit: item.serving_unit,
+            calories: item.calories,
+            protein_g: item.protein_g,
+            carbs_g: item.carbs_g,
+            fat_g: item.fat_g,
+            fiber_g: item.fiber_g ?? 0,
+            sugar_g: item.sugar_g ?? 0,
+            saturated_fat_g: item.saturated_fat_g ?? 0,
+            sodium_mg: item.sodium_mg ?? 0,
+            cholesterol_mg: item.cholesterol_mg ?? 0,
+            potassium_mg: item.potassium_mg ?? 0,
+            added_sugar_g: item.added_sugar_g ?? null,
+          });
+        }
+
+        const totalInAiUnit = qty * item.serving_size;
+        const finalQty = convertToServingUnit(totalInAiUnit, item.serving_unit, food.serving_unit);
+        await api.post(`/meals/${mealId}/items`, { food_id: food.id, quantity: finalQty });
+      }
+    },
+    onSuccess: () => {
+      onAdded();
+      const count = (aiItems ?? []).filter(i => i._include).length;
+      setLastAdded(`${count} AI-parsed item${count !== 1 ? 's' : ''}`);
+      setShowAiParse(false);
+      setAiText('');
+      setAiItems(null);
     },
   });
 
@@ -675,6 +951,11 @@ function AddFoodModal({ open, mealId, userId, onClose, onAdded }: {
                       <span className="text-[10px] text-gray-700">
                         {dateLabel(item.meal_date)} · {MEAL_LABELS[item.meal_type] ?? item.meal_type}
                       </span>
+                      {!item.is_mine && (
+                        <span className="text-[10px] px-1.5 py-0.5 rounded-full bg-gray-800 text-gray-400 shrink-0">
+                          via {item.logged_by_name}
+                        </span>
+                      )}
                     </div>
                   </div>
                   <div className="shrink-0 text-[11px] text-gray-600 text-right">
@@ -690,6 +971,132 @@ function AddFoodModal({ open, mealId, userId, onClose, onAdded }: {
           <Button variant="secondary" onClick={() => setShowRecent(false)} className="w-full">
             Back to search
           </Button>
+        </div>
+      </Modal>
+    );
+  }
+
+  if (showAiParse) {
+    const includedItems = (aiItems ?? []).filter(i => i._include);
+    const totals = includedItems.reduce((acc, item) => {
+      const qty = parseFloat(item._qty) || item.quantity;
+      const scale = (qty * item.serving_size) / item.serving_size;
+      return {
+        calories: acc.calories + item.calories * scale,
+        protein_g: acc.protein_g + item.protein_g * scale,
+        carbs_g: acc.carbs_g + item.carbs_g * scale,
+        fat_g: acc.fat_g + item.fat_g * scale,
+      };
+    }, { calories: 0, protein_g: 0, carbs_g: 0, fat_g: 0 });
+
+    return (
+      <Modal open={open} onClose={onClose} title="AI Food Parser" size="md">
+        <div className="space-y-4">
+          {/* Input area */}
+          {!aiItems && (
+            <div className="space-y-3">
+              <p className="text-xs text-gray-400">
+                Describe what you ate in plain language. Be as specific as you like — quantities, brands, cooking method.
+              </p>
+              <textarea
+                className="w-full bg-gray-800 border border-gray-700 rounded-xl px-3 py-2.5 text-sm text-white placeholder-gray-500 focus:outline-none focus:border-indigo-500 resize-none"
+                rows={4}
+                placeholder="e.g. 2 scrambled eggs with a slice of whole wheat toast and a large coffee with whole milk"
+                value={aiText}
+                onChange={e => setAiText(e.target.value)}
+                autoFocus
+                onKeyDown={e => {
+                  if (e.key === 'Enter' && (e.metaKey || e.ctrlKey) && aiText.trim()) {
+                    parseFood.mutate(aiText.trim());
+                  }
+                }}
+              />
+              {aiError && (
+                <p className="text-xs text-red-400 bg-red-950/40 border border-red-900/50 rounded-xl px-3 py-2">
+                  {aiError.includes('ANTHROPIC_API_KEY')
+                    ? 'API key not set. Add ANTHROPIC_API_KEY to server/.env and restart the server.'
+                    : aiError}
+                </p>
+              )}
+              <div className="flex gap-2">
+                <Button variant="secondary" onClick={() => { setShowAiParse(false); setAiText(''); setAiError(null); }} className="flex-1">
+                  Cancel
+                </Button>
+                <Button
+                  onClick={() => parseFood.mutate(aiText.trim())}
+                  disabled={!aiText.trim() || parseFood.isPending}
+                  className="flex-1 bg-violet-600 hover:bg-violet-500"
+                >
+                  {parseFood.isPending ? (
+                    <><span className="animate-spin inline-block w-3.5 h-3.5 border-2 border-white/30 border-t-white rounded-full mr-1.5" />Parsing…</>
+                  ) : (
+                    <><Sparkles size={14} /> Parse</>
+                  )}
+                </Button>
+              </div>
+              <p className="text-[11px] text-gray-600 text-center">Tip: ⌘↵ / Ctrl↵ to submit</p>
+            </div>
+          )}
+
+          {/* Parsed results */}
+          {aiItems && (
+            <div className="space-y-3">
+              <div className="flex items-center justify-between">
+                <p className="text-xs text-gray-400">Review and adjust quantities, then log.</p>
+                <button onClick={() => { setAiItems(null); setAiText(''); }} className="text-xs text-gray-500 hover:text-white">← Edit</button>
+              </div>
+
+              <div className="space-y-2 max-h-64 overflow-y-auto pr-1">
+                {aiItems.map((item, i) => (
+                  <div key={i} className={`flex items-center gap-2 px-3 py-2 rounded-xl border transition-colors ${item._include ? 'border-gray-700 bg-gray-800/50' : 'border-gray-800 bg-gray-900/50 opacity-50'}`}>
+                    <input
+                      type="checkbox"
+                      checked={item._include}
+                      onChange={e => setAiItems(prev => prev!.map((it, j) => j === i ? { ...it, _include: e.target.checked } : it))}
+                      className="accent-violet-500 w-3.5 h-3.5 shrink-0"
+                    />
+                    <div className="flex-1 min-w-0">
+                      <p className="text-xs font-medium text-white truncate">{item.name}</p>
+                      <p className="text-[11px] text-gray-500">
+                        {Math.round(item.calories * (parseFloat(item._qty) || item.quantity))} kcal · {item.protein_g * (parseFloat(item._qty) || item.quantity)}P · {item.carbs_g * (parseFloat(item._qty) || item.quantity)}C · {item.fat_g * (parseFloat(item._qty) || item.quantity)}F
+                      </p>
+                    </div>
+                    <div className="flex items-center gap-1 shrink-0">
+                      <input
+                        type="number"
+                        min="0.1"
+                        step="0.1"
+                        value={item._qty}
+                        onChange={e => setAiItems(prev => prev!.map((it, j) => j === i ? { ...it, _qty: e.target.value } : it))}
+                        className="w-14 bg-gray-700 border border-gray-600 rounded-lg px-1.5 py-0.5 text-xs text-white text-right focus:outline-none focus:border-indigo-500"
+                      />
+                      <span className="text-[11px] text-gray-500 w-8 truncate">{item.serving_unit}</span>
+                    </div>
+                  </div>
+                ))}
+              </div>
+
+              {includedItems.length > 0 && (
+                <div className="flex items-center justify-between text-[11px] text-gray-400 px-1">
+                  <span>{includedItems.length} item{includedItems.length !== 1 ? 's' : ''}</span>
+                  <span>{Math.round(totals.calories)} kcal · {totals.protein_g.toFixed(1)}P · {totals.carbs_g.toFixed(1)}C · {totals.fat_g.toFixed(1)}F</span>
+                </div>
+              )}
+
+              <Button
+                onClick={() => logAiItems.mutate(aiItems)}
+                disabled={includedItems.length === 0 || logAiItems.isPending}
+                className="w-full bg-violet-600 hover:bg-violet-500"
+                size="lg"
+              >
+                {logAiItems.isPending ? (
+                  <><span className="animate-spin inline-block w-3.5 h-3.5 border-2 border-white/30 border-t-white rounded-full mr-1.5" />Logging…</>
+                ) : (
+                  <><Check size={15} /> Log {includedItems.length} item{includedItems.length !== 1 ? 's' : ''}</>
+                )}
+              </Button>
+            </div>
+          )}
         </div>
       </Modal>
     );
@@ -849,7 +1256,7 @@ function AddFoodModal({ open, mealId, userId, onClose, onAdded }: {
           </div>
         )}
 
-        <div className="grid grid-cols-2 gap-2">
+        <div className="grid grid-cols-3 gap-2">
           <button onClick={() => { setShowRecent(true); setLastAdded(null); }}
             className="flex items-center justify-center gap-1.5 px-3 py-2 rounded-xl border border-dashed border-gray-700 hover:border-indigo-500 text-gray-500 hover:text-indigo-400 text-xs font-medium transition-colors">
             <Clock size={12} /> Recent
@@ -858,6 +1265,10 @@ function AddFoodModal({ open, mealId, userId, onClose, onAdded }: {
           <button onClick={() => { setShowQuickLog(true); setLastAdded(null); }}
             className="flex items-center justify-center gap-1.5 px-3 py-2 rounded-xl border border-dashed border-gray-700 hover:border-indigo-500 text-gray-500 hover:text-indigo-400 text-xs font-medium transition-colors">
             <Zap size={12} /> Quick log
+          </button>
+          <button onClick={() => { setShowAiParse(true); setLastAdded(null); setAiItems(null); setAiText(''); setAiError(null); }}
+            className="flex items-center justify-center gap-1.5 px-3 py-2 rounded-xl border border-dashed border-violet-900/60 hover:border-violet-500 text-violet-500/70 hover:text-violet-400 text-xs font-medium transition-colors">
+            <Sparkles size={12} /> AI
           </button>
         </div>
 

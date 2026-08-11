@@ -27,6 +27,7 @@ export interface User {
   weight_unit: 'lb' | 'kg';
   volume_unit: 'oz' | 'ml';
   length_unit: 'ft' | 'cm';
+  active_regime_id?: number | null;
 }
 
 export interface Food {
@@ -141,6 +142,26 @@ export interface Routine {
   name: string;
   notes?: string;
   exercises: RoutineExercise[];
+  /** Only present on the shared GET /api/routines (all-routines) response */
+  owner_name?: string;
+}
+
+export interface RegimeDay {
+  id: number;
+  day_index: number;
+  routine_id: number;
+  routine_name: string;
+}
+
+export interface WorkoutRegime {
+  id: number;
+  user_id: number;
+  name: string;
+  notes?: string;
+  days: RegimeDay[];
+  /** 0-based index into `days` for the next workout, derived from completed-session count */
+  next_day_index: number | null;
+  next_routine_id: number | null;
 }
 
 export interface SetLog {
@@ -152,6 +173,7 @@ export interface SetLog {
   actual_weight_value?: number;
   actual_weight_unit: string;
   is_pb: number;
+  is_assisted: number;
   logged_at: string;
   actual_rest_seconds?: number;
   notes?: string;
@@ -163,6 +185,7 @@ export interface SessionExercise {
   exercise_id: number;
   exercise_name: string;
   exercise_type: 'reps' | 'timed';
+  category?: ExerciseCategory;
   primary_muscles: string[];
   secondary_muscles: string[];
   order_index: number;
@@ -190,6 +213,19 @@ export interface WorkoutSession {
   total_rest_seconds: number;
   calories_burned?: number;
   exercises: SessionExercise[];
+}
+
+export interface WorkoutSessionSummary {
+  id: number;
+  user_id: number;
+  routine_id?: number;
+  routine_name?: string;
+  name: string;
+  started_at: string;
+  completed_at?: string;
+  status: 'in_progress' | 'completed' | 'abandoned';
+  calories_burned?: number;
+  exercise_count: number;
 }
 
 export interface DailySummary {
